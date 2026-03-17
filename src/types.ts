@@ -1,5 +1,40 @@
 import { Job } from './node-file-trace';
 
+export interface AssetLocation {
+  start: number; // Character offset where reference starts
+  end: number; // Character offset where reference ends
+  source: string; // Original source code text
+  type: AssetLocationType;
+}
+
+export type AssetLocationType =
+  | 'fs.read' // readFileSync, readFile, createReadStream, etc.
+  | 'fs.stat' // existsSync, exists, statSync, stat, etc.
+  | 'fs.readdir' // readdirSync, readdir
+  | 'fs.open' // open, openSync, promises.open
+  | 'fs.write' // write, writeSync, appendFile, appendFileSync, etc.
+  | 'fs.realpath' // realpath, realpathSync
+  | 'path.join'
+  | 'path.resolve'
+  | 'path.relative'
+  | 'path.dirname'
+  | 'path.basename'
+  | 'path.extname'
+  | '__dirname'
+  | '__filename'
+  | 'import.meta.url'
+  | 'require'
+  | 'require.resolve'
+  | 'module.require'
+  | 'import'
+  | 'export'
+  | 'dynamic-import'
+  | 'bindings'
+  | 'node-gyp-build'
+  | 'nbind'
+  | 'glob'
+  | 'other';
+
 export interface Stats {
   isFile(): boolean;
   isDirectory(): boolean;
@@ -58,6 +93,7 @@ export interface NodeFileTraceOptions {
   ) => Promise<string | string[]>;
   fileIOConcurrency?: number;
   depth?: number;
+  trackLocations?: boolean;
 }
 
 export type NodeFileTraceReasonType =
@@ -82,4 +118,5 @@ export interface NodeFileTraceResult {
   esmFileList: Set<string>;
   reasons: NodeFileTraceReasons;
   warnings: Set<Error>;
+  assetsLocation?: Map<string, AssetLocation[]>;
 }

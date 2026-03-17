@@ -7,48 +7,98 @@ import { Ast } from './types';
 type Node = Ast['body'][0];
 
 const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
-  '@generated/photon'({ id, emitAssetDirectory }) {
+  '@generated/photon'({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('@generated/photon/index.js')) {
-      emitAssetDirectory(resolve(dirname(id), 'runtime/'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAssetDirectory(resolve(dirname(id), 'runtime/'), node);
     }
   },
-  '@serialport/bindings-cpp'({ id, emitAssetDirectory }) {
+  '@serialport/bindings-cpp'({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('@serialport/bindings-cpp/dist/index.js')) {
-      emitAssetDirectory(resolve(dirname(id), '..', 'build', 'Release'));
-      emitAssetDirectory(resolve(dirname(id), '..', 'prebuilds'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAssetDirectory(resolve(dirname(id), '..', 'build', 'Release'), node);
+      emitAssetDirectory(resolve(dirname(id), '..', 'prebuilds'), node);
     }
   },
-  argon2({ id, emitAssetDirectory }) {
+  argon2({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('argon2/argon2.js')) {
-      emitAssetDirectory(resolve(dirname(id), 'build', 'Release'));
-      emitAssetDirectory(resolve(dirname(id), 'prebuilds'));
-      emitAssetDirectory(resolve(dirname(id), 'lib', 'binding'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAssetDirectory(resolve(dirname(id), 'build', 'Release'), node);
+      emitAssetDirectory(resolve(dirname(id), 'prebuilds'), node);
+      emitAssetDirectory(resolve(dirname(id), 'lib', 'binding'), node);
     }
   },
-  bull({ id, emitAssetDirectory }) {
+  bull({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('bull/lib/commands/index.js')) {
-      emitAssetDirectory(resolve(dirname(id)));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAssetDirectory(resolve(dirname(id)), node);
     }
   },
-  camaro({ id, emitAsset }) {
+  camaro({ id, ast, emitAsset }) {
     if (id.endsWith('camaro/dist/camaro.js')) {
-      emitAsset(resolve(dirname(id), 'camaro.wasm'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAsset(resolve(dirname(id), 'camaro.wasm'), node);
     }
   },
-  esbuild({ id, emitAssetDirectory }) {
+  esbuild({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('esbuild/lib/main.js')) {
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
       const file = resolve(id, '..', '..', 'package.json');
       const pkg = JSON.parse(readFileSync(file, 'utf8'));
       for (const dep of Object.keys(pkg.optionalDependencies || {})) {
         const dir = resolve(id, '..', '..', '..', dep);
-        emitAssetDirectory(dir);
+        emitAssetDirectory(dir, node);
       }
     }
   },
-  'ffmpeg-static'({ id, emitAsset }) {
+  'ffmpeg-static'({ id, ast, emitAsset }) {
     if (id.endsWith('ffmpeg-static/index.js')) {
       const bin = require(id);
-      emitAsset(bin);
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'AssignmentExpression' &&
+          s.expression.right.type === 'CallExpression' &&
+          s.expression.right.callee.type === 'Identifier' &&
+          s.expression.right.callee.name === 'require',
+      );
+      emitAsset(bin, node);
     }
   },
   'google-gax'({ id, ast, emitAssetDirectory }) {
@@ -64,6 +114,7 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
         ) {
           emitAssetDirectory(
             resolve(dirname(id), '../../../google-proto-files'),
+            statement,
           );
         }
       }
@@ -127,40 +178,74 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
             '-' +
             process.arch +
             '.node';
-          emitAsset(resolve(id, '../../build/Release/' + binaryName));
+          emitAsset(
+            resolve(id, '../../build/Release/' + binaryName),
+            statement,
+          );
         }
       }
     }
   },
-  'phantomjs-prebuilt'({ id, emitAssetDirectory }) {
+  'phantomjs-prebuilt'({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('phantomjs-prebuilt/lib/phantomjs.js')) {
-      emitAssetDirectory(resolve(dirname(id), '..', 'bin'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAssetDirectory(resolve(dirname(id), '..', 'bin'), node);
     }
   },
-  'remark-prism'({ id, emitAssetDirectory }) {
+  'remark-prism'({ id, ast, emitAssetDirectory }) {
     const file = 'remark-prism/src/highlight.js';
     if (id.endsWith(file)) {
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
       try {
         const node_modules = id.slice(0, -file.length);
-        emitAssetDirectory(resolve(node_modules, 'prismjs', 'components'));
+        emitAssetDirectory(
+          resolve(node_modules, 'prismjs', 'components'),
+          node,
+        );
       } catch (e) {
         // fail silently
       }
     }
   },
-  semver({ id, emitAsset }) {
+  semver({ id, ast, emitAsset }) {
     if (id.endsWith('semver/index.js')) {
       // See https://github.com/npm/node-semver/blob/master/CHANGELOG.md#710
-      emitAsset(resolve(id.replace('index.js', 'preload.js')));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAsset(resolve(id.replace('index.js', 'preload.js')), node);
     }
   },
-  sharp: async ({ id, emitAssetDirectory, job }) => {
+  sharp: async ({ id, ast, emitAssetDirectory, job }) => {
     if (id.endsWith('sharp/lib/index.js')) {
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
       const file = resolve(id, '..', '..', 'package.json');
       const pkg = JSON.parse(readFileSync(file, 'utf8'));
       for (const dep of Object.keys(pkg.optionalDependencies || {})) {
         const dir = resolve(id, '..', '..', '..', dep);
-        emitAssetDirectory(dir);
+        emitAssetDirectory(dir, node);
 
         try {
           const file = resolve(dir, 'package.json');
@@ -172,7 +257,7 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
               '..',
               innerDep,
             );
-            emitAssetDirectory(innerDir);
+            emitAssetDirectory(innerDir, node);
           }
         } catch (err: any) {
           if (err && err.code !== 'ENOENT') {
@@ -185,10 +270,17 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
       }
     }
   },
-  shiki({ id, emitAssetDirectory }) {
+  shiki({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('/dist/index.js')) {
-      emitAssetDirectory(resolve(dirname(id), '..', 'languages'));
-      emitAssetDirectory(resolve(dirname(id), '..', 'themes'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAssetDirectory(resolve(dirname(id), '..', 'languages'), node);
+      emitAssetDirectory(resolve(dirname(id), '..', 'themes'), node);
     }
   },
   'socket.io': async function ({ id, ast, job }) {
@@ -297,55 +389,104 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
       }
     }
   },
-  typescript({ id, emitAssetDirectory }) {
+  typescript({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('typescript/lib/tsc.js')) {
-      emitAssetDirectory(resolve(id, '../'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAssetDirectory(resolve(id, '../'), node);
     }
   },
-  'uglify-es'({ id, emitAsset }) {
+  'uglify-es'({ id, ast, emitAsset }) {
     if (id.endsWith('uglify-es/tools/node.js')) {
-      emitAsset(resolve(id, '../../lib/utils.js'));
-      emitAsset(resolve(id, '../../lib/ast.js'));
-      emitAsset(resolve(id, '../../lib/parse.js'));
-      emitAsset(resolve(id, '../../lib/transform.js'));
-      emitAsset(resolve(id, '../../lib/scope.js'));
-      emitAsset(resolve(id, '../../lib/output.js'));
-      emitAsset(resolve(id, '../../lib/compress.js'));
-      emitAsset(resolve(id, '../../lib/sourcemap.js'));
-      emitAsset(resolve(id, '../../lib/mozilla-ast.js'));
-      emitAsset(resolve(id, '../../lib/propmangle.js'));
-      emitAsset(resolve(id, '../../lib/minify.js'));
-      emitAsset(resolve(id, '../exports.js'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAsset(resolve(id, '../../lib/utils.js'), node);
+      emitAsset(resolve(id, '../../lib/ast.js'), node);
+      emitAsset(resolve(id, '../../lib/parse.js'), node);
+      emitAsset(resolve(id, '../../lib/transform.js'), node);
+      emitAsset(resolve(id, '../../lib/scope.js'), node);
+      emitAsset(resolve(id, '../../lib/output.js'), node);
+      emitAsset(resolve(id, '../../lib/compress.js'), node);
+      emitAsset(resolve(id, '../../lib/sourcemap.js'), node);
+      emitAsset(resolve(id, '../../lib/mozilla-ast.js'), node);
+      emitAsset(resolve(id, '../../lib/propmangle.js'), node);
+      emitAsset(resolve(id, '../../lib/minify.js'), node);
+      emitAsset(resolve(id, '../exports.js'), node);
     }
   },
-  'uglify-js'({ id, emitAsset, emitAssetDirectory }) {
+  'uglify-js'({ id, ast, emitAsset, emitAssetDirectory }) {
     if (id.endsWith('uglify-js/tools/node.js')) {
-      emitAssetDirectory(resolve(id, '../../lib'));
-      emitAsset(resolve(id, '../exports.js'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAssetDirectory(resolve(id, '../../lib'), node);
+      emitAsset(resolve(id, '../exports.js'), node);
     }
   },
-  'playwright-core'({ id, emitAsset }) {
+  'playwright-core'({ id, ast, emitAsset }) {
     if (id.endsWith('playwright-core/index.js')) {
-      emitAsset(resolve(dirname(id), 'browsers.json'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAsset(resolve(dirname(id), 'browsers.json'), node);
     }
   },
-  'geo-tz'({ id, emitAsset }) {
+  'geo-tz'({ id, ast, emitAsset }) {
     if (id.endsWith('geo-tz/dist/geo-tz.js')) {
-      emitAsset(resolve(dirname(id), '../data/geo.dat'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAsset(resolve(dirname(id), '../data/geo.dat'), node);
     }
   },
-  pixelmatch({ id, emitDependency }) {
+  pixelmatch({ id, ast, emitDependency }) {
     if (id.endsWith('pixelmatch/index.js')) {
-      emitDependency(resolve(dirname(id), 'bin/pixelmatch'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitDependency(resolve(dirname(id), 'bin/pixelmatch'), node);
     }
   },
-  'geoip-lite'({ id, emitAsset }) {
+  'geoip-lite'({ id, ast, emitAsset }) {
     if (id.endsWith('geoip-lite/lib/geoip.js')) {
-      emitAsset(resolve(dirname(id), '../data/geoip-city.dat'));
-      emitAsset(resolve(dirname(id), '../data/geoip-city6.dat'));
-      emitAsset(resolve(dirname(id), '../data/geoip-city-names.dat'));
-      emitAsset(resolve(dirname(id), '../data/geoip-country.dat'));
-      emitAsset(resolve(dirname(id), '../data/geoip-country6.dat'));
+      const node = ast.body.find(
+        (s) =>
+          s.type === 'ExpressionStatement' &&
+          s.expression.type === 'CallExpression' &&
+          s.expression.callee.type === 'Identifier' &&
+          s.expression.callee.name === 'require',
+      );
+      emitAsset(resolve(dirname(id), '../data/geoip-city.dat'), node);
+      emitAsset(resolve(dirname(id), '../data/geoip-city6.dat'), node);
+      emitAsset(resolve(dirname(id), '../data/geoip-city-names.dat'), node);
+      emitAsset(resolve(dirname(id), '../data/geoip-country.dat'), node);
+      emitAsset(resolve(dirname(id), '../data/geoip-country6.dat'), node);
     }
   },
 };
@@ -353,9 +494,9 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
 interface SpecialCaseOpts {
   id: string;
   ast: Ast;
-  emitDependency: (filename: string) => void;
-  emitAsset: (filename: string) => void;
-  emitAssetDirectory: (dirname: string) => void;
+  emitDependency: (filename: string, node?: any) => void;
+  emitAsset: (filename: string, node?: any) => void;
+  emitAssetDirectory: (dirname: string, node?: any) => void;
   job: Job;
 }
 

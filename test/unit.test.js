@@ -169,12 +169,13 @@ for (const { testName, isRoot } of unitTests) {
         // Ignore.
       }
 
-      const { fileList, reasons } = await nodeFileTrace(
+      const { fileList, reasons, assetsLocation } = await nodeFileTrace(
         inputFileNames.map((file) => join(unitPath, file)),
         {
           conditions: testOpts.conditions,
           base: isRoot ? '/' : `${__dirname}/../`,
           processCwd: unitPath,
+          trackLocations: fs.existsSync(join(unitPath, 'assets-location.json')),
           paths: {
             dep: `${__dirname}/../test/unit/esm-paths/esm-dep.js`,
             'dep/': `${__dirname}/../test/unit/esm-paths-trailer/`,

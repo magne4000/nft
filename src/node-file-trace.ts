@@ -1,4 +1,5 @@
 import {
+  AssetLocation,
   NodeFileTraceOptions,
   NodeFileTraceResult,
   NodeFileTraceReasons,
@@ -43,6 +44,9 @@ export async function nodeFileTrace(
     reasons: job.reasons,
     warnings: job.warnings,
   };
+  if (job.trackLocations) {
+    result.assetsLocation = job.assetsLocation;
+  }
   return result;
 }
 
@@ -56,6 +60,7 @@ export class Job {
   public ignoreFn: (path: string, parent?: string) => boolean;
   public log: boolean;
   public depth: number;
+  public trackLocations: boolean;
   public mixedModules: boolean;
   public analysis: {
     emitGlobs?: boolean;
@@ -65,6 +70,7 @@ export class Job {
   private analysisCache: Map<string, AnalyzeResult>;
   public fileList: Set<string>;
   public esmFileList: Set<string>;
+  public assetsLocation: Map<string, AssetLocation[]> = new Map();
   public processed: Set<string>;
   public warnings: Set<Error>;
   public reasons: NodeFileTraceReasons = new Map();
@@ -88,8 +94,10 @@ export class Job {
     // performance and memory usage for fs operations
     fileIOConcurrency = 1024,
     depth = Infinity,
+    trackLocations = false,
   }: NodeFileTraceOptions) {
     this.ts = ts;
+    this.trackLocations = trackLocations;
     base = resolve(base);
     this.ignoreFn = (path: string) => {
       if (path.startsWith('..' + sep)) return true;
@@ -388,10 +396,21 @@ export class Job {
       this.analysisCache.set(realPath, analyzeResult);
     }
 
-    const { deps, imports, assets, isESM } = analyzeResult;
+    const { deps, imports, assets, isESM, assetsLocation } = analyzeResult;
 
     if (isESM) {
       this.esmFileList.add(relative(this.base, realPath));
+    }
+
+    if (this.trackLocations && assetsLocation) {
+      for (const [asset, locations] of assetsLocation) {
+        let existingLocations = this.assetsLocation.get(asset);
+        if (!existingLocations) {
+          existingLocations = [];
+          this.assetsLocation.set(asset, existingLocations);
+        }
+        existingLocations.push(...locations);
+      }
     }
 
     await Promise.all([

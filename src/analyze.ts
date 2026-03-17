@@ -1,3 +1,4 @@
+import { AssetLocation, AssetLocationType } from './types';
 import path from 'path';
 import { AsyncHandler, asyncWalk } from 'estree-walker';
 import { attachScopes } from '@rollup/pluginutils';
@@ -253,6 +254,7 @@ export interface AnalyzeResult {
   deps: Set<string>;
   imports: Set<string>;
   isESM: boolean;
+  assetsLocation?: Map<string, AssetLocation[]>;
 }
 
 export default async function analyze(
@@ -263,6 +265,37 @@ export default async function analyze(
   const assets = new Set<string>();
   const deps = new Set<string>();
   const imports = new Set<string>();
+  const assetsLocation = job.trackLocations
+    ? new Map<string, AssetLocation[]>()
+    : undefined;
+
+  async function addAssetLocation(
+    asset: string,
+    node: Node,
+    type: AssetLocationType,
+  ) {
+    if (!assetsLocation) return;
+    const resolvedAsset = await resolve(asset, id, job);
+    const relAsset = Array.isArray(resolvedAsset)
+      ? path.relative(job.base, resolvedAsset[0])
+      : path.relative(job.base, resolvedAsset);
+    let locations = assetsLocation.get(relAsset);
+    if (!locations) {
+      locations = [];
+      assetsLocation.set(relAsset, locations);
+    }
+    const start = (node as any).start;
+    const end = (node as any).end;
+    const source = code.substring(start, end);
+    const resolvedType =
+      type === 'other' ? determineAssetLocationType(node) : type;
+    locations.push({
+      start,
+      end,
+      source,
+      type: resolvedType,
+    });
+  }
 
   const dir = path.dirname(id);
   // if (typeof options.production === 'boolean' && staticProcess.env.NODE_ENV === UNKNOWN)
@@ -270,7 +303,7 @@ export default async function analyze(
   cwd = job.cwd;
   const pkgBase = getPackageBase(id);
 
-  const emitAssetDirectory = (wildcardPath: string) => {
+  const emitAssetDirectory = (wildcardPath: string, node?: Node) => {
     if (!job.analysis.emitGlobs) return;
     wildcardPath = wildcardPath.replaceAll(path.sep, path.posix.sep);
     const wildcardIndex = wildcardPath.indexOf(WILDCARD);
@@ -304,7 +337,14 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => assets.add(file));
+        .forEach(async (file) => {
+          assets.add(file);
+          if (node) {
+            await addAssetLocation(file, node, 'glob');
+          } else if (staticChildNode) {
+            await addAssetLocation(file, staticChildNode, 'glob');
+          }
+        });
     });
   };
 
@@ -344,9 +384,33 @@ export default async function analyze(
         new Error(`Failed to parse ${id} as module:\n${e && e.message}`),
       );
       // Parser errors just skip analysis
-      return { assets, deps, imports, isESM: false };
+      return { assets, deps, imports, isESM: false, assetsLocation };
     }
   }
+
+  const parentNodes = new WeakMap<Node, Node>();
+  function populateParentMap(node: Node) {
+    const stack: { node: Node; parent?: Node }[] = [{ node }];
+    while (stack.length > 0) {
+      const { node, parent } = stack.pop()!;
+      if (parent) parentNodes.set(node, parent);
+      for (const key in node) {
+        if (key === 'loc' || key === 'start' || key === 'end') continue;
+        const child = (node as any)[key];
+        if (Array.isArray(child)) {
+          for (let i = child.length - 1; i >= 0; i--) {
+            const item = child[i];
+            if (item && typeof item.type === 'string') {
+              stack.push({ node: item, parent: node });
+            }
+          }
+        } else if (child && typeof child.type === 'string') {
+          stack.push({ node: child, parent: node });
+        }
+      }
+    }
+  }
+  populateParentMap(ast);
 
   const importMetaUrl = pathToFileURL(id).href;
 
@@ -376,15 +440,17 @@ export default async function analyze(
       shadowDepth: 0,
       value: {
         value: {
-          [FUNCTION](specifier: string) {
+          async [FUNCTION](specifier: string, node: Node) {
             deps.add(specifier);
+            await addAssetLocation(specifier, node, 'require');
             const m =
               staticModules[
                 specifier.startsWith('node:') ? specifier.slice(5) : specifier
               ];
             return m.default;
           },
-          resolve(specifier: string) {
+          async resolve(specifier: string, node: Node) {
+            await addAssetLocation(specifier, node, 'require.resolve');
             return resolve(specifier, id, job);
           },
         },
@@ -431,6 +497,7 @@ export default async function analyze(
       if (decl.type === 'ImportDeclaration') {
         const source = String(decl.source.value);
         deps.add(source);
+        await addAssetLocation(source, decl as any, 'import');
         const staticModule =
           staticModules[source.startsWith('node:') ? source.slice(5) : source];
         if (staticModule) {
@@ -455,7 +522,11 @@ export default async function analyze(
         decl.type === 'ExportNamedDeclaration' ||
         decl.type === 'ExportAllDeclaration'
       ) {
-        if (decl.source) deps.add(String(decl.source.value));
+        if (decl.source) {
+          const source = String(decl.source.value);
+          deps.add(source);
+          await addAssetLocation(source, decl as any, 'export');
+        }
       }
     }
   }
@@ -528,7 +599,11 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => deps.add(file));
+        .forEach(async (file) => {
+          deps.add(file);
+          if (staticChildNode)
+            await addAssetLocation(file, staticChildNode, 'glob');
+        });
     });
   }
 
@@ -547,8 +622,13 @@ export default async function analyze(
     let computed = await computePureStaticValue(expression, true);
     if (!computed) return;
 
-    function add(value: string) {
+    async function add(value: string) {
       (isImport ? imports : deps).add(value);
+      await addAssetLocation(
+        value,
+        expression,
+        isImport ? 'dynamic-import' : 'require',
+      );
     }
 
     if ('value' in computed && typeof computed.value === 'string') {
@@ -569,8 +649,26 @@ export default async function analyze(
     await handleSpecialCases({
       id,
       ast,
-      emitDependency: (path) => deps.add(path),
-      emitAsset: (path) => assets.add(path),
+      emitDependency: (path: string, node?: Node) => {
+        deps.add(path);
+        if (node) {
+          const n = node;
+          const type = determineAssetLocationType(n);
+          assetEmissionPromises = assetEmissionPromises.then(() =>
+            addAssetLocation(path, n, type),
+          );
+        }
+      },
+      emitAsset: (path: string, node?: Node) => {
+        assets.add(path);
+        if (node) {
+          const n = node;
+          const type = determineAssetLocationType(n);
+          assetEmissionPromises = assetEmissionPromises.then(() =>
+            addAssetLocation(path, n, type),
+          );
+        }
+      },
       emitAssetDirectory,
       job,
     });
@@ -584,6 +682,30 @@ export default async function analyze(
     // Note that `context` can be undefined in `leave()`
     if (!staticChildNode)
       throw new Error('Internal error: No staticChildNode for backtrack.');
+
+    // If we're at a CallExpression that we recognize, we stop backtracking
+    // so that the location type is the call itself, not something inside it.
+    if (parent.type === 'CallExpression') {
+      const type = determineAssetLocationType(parent);
+      if (
+        type !== 'other' &&
+        type !== 'require' &&
+        type !== 'require.resolve' &&
+        type !== 'bindings' &&
+        type !== 'node-gyp-build' &&
+        type !== 'nbind'
+      ) {
+        // If we stop here, the current staticChildValue should be based on this parent
+        const curStaticValue = await computePureStaticValue(parent, true);
+        if (curStaticValue) {
+          staticChildValue = curStaticValue;
+          staticChildNode = parent;
+        }
+        await emitStaticChildAsset();
+        return;
+      }
+    }
+
     const curStaticValue = await computePureStaticValue(parent, true);
     if (curStaticValue) {
       if (
@@ -1150,7 +1272,9 @@ export default async function analyze(
   });
 
   await assetEmissionPromises;
-  return { assets, deps, imports, isESM };
+  const result: AnalyzeResult = { assets, deps, imports, isESM };
+  if (assetsLocation) result.assetsLocation = assetsLocation;
+  return result;
 
   async function emitAssetPath(assetPath: string) {
     // verify the asset file / directory exists
@@ -1252,9 +1376,67 @@ export default async function analyze(
   }
 
   async function emitStaticChildAsset() {
-    if (!staticChildValue) {
+    if (!staticChildValue || !staticChildNode) {
       return;
     }
+
+    let type = determineAssetLocationType(staticChildNode);
+    let n = staticChildNode;
+    if (
+      type === 'other' ||
+      type === '__dirname' ||
+      type === '__filename' ||
+      type === 'import.meta.url'
+    ) {
+      // If we only found a trigger, or nothing, check if the parent is a call expression that might give a better type
+      let p = parentNodes.get(staticChildNode);
+      while (p) {
+        if (
+          p.type === 'BinaryExpression' ||
+          p.type === 'TemplateLiteral' ||
+          (p.type === 'CallExpression' &&
+            determineAssetLocationType(p) === 'path.join')
+        ) {
+          if (p.type === 'CallExpression') {
+            const parentType = determineAssetLocationType(p);
+            if (parentType !== 'other' && parentType !== 'path.join') {
+              type = parentType;
+              n = p;
+              break;
+            }
+            if (parentType === 'path.join') {
+              type = 'path.join';
+              n = p;
+            }
+          }
+          p = parentNodes.get(p);
+        } else {
+          // If it's a CallExpression but not path.join, it might be our target
+          if (p.type === 'CallExpression') {
+            const parentType = determineAssetLocationType(p);
+            if (parentType !== 'other') {
+              type = parentType;
+              n = p;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    // Special case: if we still have a trigger type, we want to emit it.
+    // BUT we also want to emit it if it was part of a larger expression that we didn't fully capture.
+    // However, if we found a more refined location (like fs.read), we PREFER it.
+    // If we only have the trigger (type matches the trigger), we still emit it.
+
+    const emit = async (
+      resolved: string,
+      node: Node,
+      type: AssetLocationType,
+    ) => {
+      await emitAssetPath(resolved);
+      await addAssetLocation(resolved, node, type);
+    };
 
     if (
       'value' in staticChildValue &&
@@ -1262,7 +1444,7 @@ export default async function analyze(
     ) {
       try {
         const resolved = resolveAbsolutePathOrUrl(staticChildValue.value);
-        await emitAssetPath(resolved);
+        await emit(resolved, n, type);
       } catch (e) {}
     } else if (
       'ifTrue' in staticChildValue &&
@@ -1278,10 +1460,13 @@ export default async function analyze(
       try {
         resolvedElse = resolveAbsolutePathOrUrl(staticChildValue.else);
       } catch (e) {}
-      if (resolvedThen) await emitAssetPath(resolvedThen);
-      if (resolvedElse) await emitAssetPath(resolvedElse);
+      if (resolvedThen) {
+        await emit(resolvedThen, n, type);
+      }
+      if (resolvedElse) {
+        await emit(resolvedElse, n, type);
+      }
     } else if (
-      staticChildNode &&
       staticChildNode.type === 'ArrayExpression' &&
       'value' in staticChildValue &&
       staticChildValue.value instanceof Array
@@ -1289,11 +1474,118 @@ export default async function analyze(
       for (const value of staticChildValue.value) {
         try {
           const resolved = resolveAbsolutePathOrUrl(value);
-          await emitAssetPath(resolved);
+          await emit(resolved, n, type);
         } catch (e) {}
       }
     }
     staticChildNode = staticChildValue = undefined;
+  }
+
+  function determineAssetLocationType(node: Node): AssetLocationType {
+    if (node.type === 'CallExpression') {
+      const callee = node.callee;
+      if (
+        callee.type === 'MemberExpression' &&
+        callee.property.type === 'Identifier'
+      ) {
+        const prop = callee.property.name;
+        if (
+          callee.object.type === 'Identifier' &&
+          callee.object.name === 'fs'
+        ) {
+          if (
+            prop === 'readFileSync' ||
+            prop === 'readFile' ||
+            prop === 'createReadStream' ||
+            prop === 'read' ||
+            prop === 'readSync'
+          )
+            return 'fs.read';
+          if (
+            prop === 'exists' ||
+            prop === 'existsSync' ||
+            prop === 'stat' ||
+            prop === 'statSync' ||
+            prop === 'access' ||
+            prop === 'accessSync' ||
+            prop === 'lstat' ||
+            prop === 'lstatSync'
+          )
+            return 'fs.stat';
+          if (prop === 'readdir' || prop === 'readdirSync') return 'fs.readdir';
+          if (prop === 'open' || prop === 'openSync') return 'fs.open';
+          if (
+            prop === 'write' ||
+            prop === 'writeSync' ||
+            prop === 'appendFile' ||
+            prop === 'appendFileSync'
+          )
+            return 'fs.write';
+          if (prop === 'realpath' || prop === 'realpathSync')
+            return 'fs.realpath';
+        }
+        if (
+          callee.object.type === 'MemberExpression' &&
+          callee.object.object.type === 'Identifier' &&
+          callee.object.object.name === 'fs' &&
+          callee.object.property.type === 'Identifier' &&
+          callee.object.property.name === 'promises'
+        ) {
+          if (prop === 'readFile' || prop === 'read') return 'fs.read';
+          if (prop === 'stat' || prop === 'access' || prop === 'lstat')
+            return 'fs.stat';
+          if (prop === 'readdir' || prop === 'opendir') return 'fs.readdir';
+          if (prop === 'open') return 'fs.open';
+          if (prop === 'writeFile' || prop === 'appendFile') return 'fs.write';
+          if (prop === 'realpath') return 'fs.realpath';
+        }
+        if (
+          callee.object.type === 'Identifier' &&
+          callee.object.name === 'path'
+        ) {
+          if (prop === 'join') return 'path.join';
+          if (prop === 'resolve') return 'path.resolve';
+          if (prop === 'relative') return 'path.relative';
+          if (prop === 'dirname') return 'path.dirname';
+          if (prop === 'basename') return 'path.basename';
+          if (prop === 'extname') return 'path.extname';
+        }
+      }
+      if (callee.type === 'Identifier') {
+        if (callee.name === 'bindings') return 'bindings';
+        if (callee.name === 'node-gyp-build') return 'node-gyp-build';
+        if (callee.name === 'require') return 'require';
+        if (callee.name === 'nbind') return 'nbind';
+      }
+    }
+    if (node.type === 'Identifier') {
+      if (node.name === '__dirname') return '__dirname';
+      if (node.name === '__filename') return '__filename';
+    }
+    if (node.type === 'MemberExpression') {
+      if (
+        node.object.type === 'MetaProperty' &&
+        node.object.meta.name === 'import' &&
+        node.object.property.name === 'meta' &&
+        node.property.type === 'Identifier' &&
+        node.property.name === 'url'
+      ) {
+        return 'import.meta.url';
+      }
+    }
+    if (node.type === 'BinaryExpression') {
+      const leftType = determineAssetLocationType(node.left);
+      const rightType = determineAssetLocationType(node.right);
+      if (leftType !== 'other') return leftType;
+      if (rightType !== 'other') return rightType;
+    }
+    if (node.type === 'TemplateLiteral') {
+      for (const expr of node.expressions) {
+        const type = determineAssetLocationType(expr);
+        if (type !== 'other') return type;
+      }
+    }
+    return 'other';
   }
 }
 

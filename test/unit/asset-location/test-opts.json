@@ -1,0 +1,6 @@
+{
+  "trackLocations": true,
+  "analysis": {
+    "evaluatePureExpressions": true
+  }
+}
