@@ -175,7 +175,9 @@ for (const { testName, isRoot } of unitTests) {
           conditions: testOpts.conditions,
           base: isRoot ? '/' : `${__dirname}/../`,
           processCwd: unitPath,
-          trackLocations: fs.existsSync(join(unitPath, 'assets-location.json')),
+          trackLocations:
+            testOpts.trackLocations ||
+            fs.existsSync(join(unitPath, 'assets-location.json')),
           paths: {
             dep: `${__dirname}/../test/unit/esm-paths/esm-dep.js`,
             'dep/': `${__dirname}/../test/unit/esm-paths-trailer/`,
@@ -326,6 +328,32 @@ for (const { testName, isRoot } of unitTests) {
           JSON.stringify(sortedFileList, null, 2),
         );
         throw e;
+      }
+
+      // Validate asset locations if assets-location.json exists (only on non-root, non-Windows runs)
+      if (
+        !isRoot &&
+        process.platform !== 'win32' &&
+        fs.existsSync(join(unitPath, 'assets-location.json'))
+      ) {
+        const expectedLocations = JSON.parse(
+          fs.readFileSync(join(unitPath, 'assets-location.json')).toString(),
+        );
+        const actualLocations = {};
+        if (assetsLocation) {
+          for (const [key, locs] of assetsLocation) {
+            actualLocations[key] = locs;
+          }
+        }
+        try {
+          expect(actualLocations).toEqual(expectedLocations);
+        } catch (e) {
+          fs.writeFileSync(
+            join(unitPath, 'actual-assets-location.json'),
+            JSON.stringify(actualLocations, null, 2),
+          );
+          throw e;
+        }
       }
 
       if (cached) {
