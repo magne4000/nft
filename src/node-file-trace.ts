@@ -3,6 +3,7 @@ import {
   NodeFileTraceResult,
   NodeFileTraceReasons,
   NodeFileTraceReasonType,
+  FileLocationResult,
 } from './types';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'path';
 import analyze, { AnalyzeResult } from './analyze';
@@ -43,6 +44,7 @@ export async function nodeFileTrace(
     reasons: job.reasons,
     warnings: job.warnings,
   };
+  if (job.trackLocations) result.fileLocations = job.fileLocations;
   return result;
 }
 
@@ -57,6 +59,8 @@ export class Job {
   public log: boolean;
   public depth: number;
   public mixedModules: boolean;
+  public trackLocations: boolean;
+  public fileLocations: Map<string, FileLocationResult>;
   public analysis: {
     emitGlobs?: boolean;
     computeFileReferences?: boolean;
@@ -88,6 +92,7 @@ export class Job {
     // performance and memory usage for fs operations
     fileIOConcurrency = 1024,
     depth = Infinity,
+    trackLocations = false,
   }: NodeFileTraceOptions) {
     this.ts = ts;
     base = resolve(base);
@@ -127,6 +132,8 @@ export class Job {
     this.log = log;
     this.depth = depth;
     this.mixedModules = mixedModules;
+    this.trackLocations = trackLocations;
+    this.fileLocations = new Map();
     this.cachedFileSystem = new CachedFileSystem({ cache, fileIOConcurrency });
     this.analysis = {};
     if (analysis !== false) {
@@ -367,7 +374,7 @@ export class Job {
 
     let analyzeResult: AnalyzeResult;
 
-    const cachedAnalysis = this.analysisCache.get(path);
+    const cachedAnalysis = !this.trackLocations && this.analysisCache.get(path);
     if (cachedAnalysis) {
       analyzeResult = cachedAnalysis;
     } else {
@@ -377,7 +384,16 @@ export class Job {
       // directly as this will not be included in the cachedAnalysis and won't
       // be emit for successive runs that leverage the cache
       analyzeResult = await analyze(path, source.toString(), this);
-      this.analysisCache.set(path, analyzeResult);
+      if (!this.trackLocations) this.analysisCache.set(path, analyzeResult);
+    }
+
+    if (this.trackLocations) {
+      const relPath = relative(this.base, path);
+      this.fileLocations.set(relPath, {
+        assetLocations: analyzeResult.assetLocations,
+        depLocations: analyzeResult.depLocations,
+        importLocations: analyzeResult.importLocations,
+      });
     }
 
     const { deps, imports, assets, isESM } = analyzeResult;

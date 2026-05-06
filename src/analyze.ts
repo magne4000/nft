@@ -27,6 +27,7 @@ import nodeGypBuild from 'node-gyp-build';
 import mapboxPregyp from '@mapbox/node-pre-gyp';
 import { Job } from './node-file-trace';
 import { fileURLToPath, pathToFileURL, URL } from 'url';
+import { AssetLocation, LocationType } from './types';
 
 // Note: these should be deprecated over time as they ship in Acorn core
 const acorn = Parser.extend(
@@ -253,6 +254,9 @@ export interface AnalyzeResult {
   deps: Set<string>;
   imports: Set<string>;
   isESM: boolean;
+  assetLocations: Map<string, AssetLocation[]>;
+  depLocations: Map<string, AssetLocation[]>;
+  importLocations: Map<string, AssetLocation[]>;
 }
 
 export default async function analyze(
@@ -263,6 +267,22 @@ export default async function analyze(
   const assets = new Set<string>();
   const deps = new Set<string>();
   const imports = new Set<string>();
+  const assetLocations = new Map<string, AssetLocation[]>();
+  const depLocations = new Map<string, AssetLocation[]>();
+  const importLocations = new Map<string, AssetLocation[]>();
+
+  function addLocation(
+    map: Map<string, AssetLocation[]>,
+    key: string,
+    loc: AssetLocation,
+  ) {
+    let arr = map.get(key);
+    if (!arr) {
+      arr = [];
+      map.set(key, arr);
+    }
+    arr.push(loc);
+  }
 
   const dir = path.dirname(id);
   // if (typeof options.production === 'boolean' && staticProcess.env.NODE_ENV === UNKNOWN)
@@ -344,7 +364,15 @@ export default async function analyze(
         new Error(`Failed to parse ${id} as module:\n${e && e.message}`),
       );
       // Parser errors just skip analysis
-      return { assets, deps, imports, isESM: false };
+      return {
+        assets,
+        deps,
+        imports,
+        isESM: false,
+        assetLocations,
+        depLocations,
+        importLocations,
+      };
     }
   }
 
@@ -427,10 +455,20 @@ export default async function analyze(
   }
 
   if ((isESM || job.mixedModules) && isAst(ast)) {
-    for (const decl of ast.body) {
+    for (const _decl of ast.body) {
+      const decl = _decl as Node;
       if (decl.type === 'ImportDeclaration') {
         const source = String(decl.source.value);
         deps.add(source);
+        if (job.trackLocations) {
+          addLocation(depLocations, source, {
+            start: decl.source.start,
+            end: decl.source.end,
+            callStart: decl.start,
+            callEnd: decl.end,
+            type: 'import',
+          });
+        }
         const staticModule =
           staticModules[source.startsWith('node:') ? source.slice(5) : source];
         if (staticModule) {
@@ -455,7 +493,19 @@ export default async function analyze(
         decl.type === 'ExportNamedDeclaration' ||
         decl.type === 'ExportAllDeclaration'
       ) {
-        if (decl.source) deps.add(String(decl.source.value));
+        if (decl.source) {
+          const source = String(decl.source.value);
+          deps.add(source);
+          if (job.trackLocations) {
+            addLocation(depLocations, source, {
+              start: decl.source.start,
+              end: decl.source.end,
+              callStart: decl.start,
+              callEnd: decl.end,
+              type: 'import',
+            });
+          }
+        }
       }
     }
   }
@@ -478,6 +528,10 @@ export default async function analyze(
   // greatest parent statically known leaf computation corresponds to an asset path
   let staticChildNode: Node | undefined;
   let staticChildValue: EvaluatedValue;
+  // outer call node for asset location tracking (e.g. fs.readFileSync node)
+  let staticCallNode: Node | undefined;
+  // location type hint set before calling emitStaticChildAsset()
+  let staticLocationType: LocationType | undefined;
 
   // Express engine opt-out
   let definedExpressEngines = false;
@@ -532,29 +586,77 @@ export default async function analyze(
     });
   }
 
-  async function processRequireArg(expression: Node, isImport = false) {
+  async function processRequireArg(
+    expression: Node,
+    isImport = false,
+    callNode?: Node,
+    locationType?: LocationType,
+  ) {
     if (expression.type === 'ConditionalExpression') {
-      await processRequireArg(expression.consequent, isImport);
-      await processRequireArg(expression.alternate, isImport);
+      await processRequireArg(
+        expression.consequent,
+        isImport,
+        callNode,
+        locationType,
+      );
+      await processRequireArg(
+        expression.alternate,
+        isImport,
+        callNode,
+        locationType,
+      );
       return;
     }
     if (expression.type === 'LogicalExpression') {
-      await processRequireArg(expression.left, isImport);
-      await processRequireArg(expression.right, isImport);
+      await processRequireArg(
+        expression.left,
+        isImport,
+        callNode,
+        locationType,
+      );
+      await processRequireArg(
+        expression.right,
+        isImport,
+        callNode,
+        locationType,
+      );
       return;
     }
 
     let computed = await computePureStaticValue(expression, true);
     if (!computed) return;
 
+    const type: LocationType =
+      locationType ?? (isImport ? 'dynamic-import' : 'require');
+    const locMap = isImport ? importLocations : depLocations;
+
     function add(value: string) {
       (isImport ? imports : deps).add(value);
+      if (job.trackLocations && callNode) {
+        addLocation(locMap, value, {
+          start: expression.start,
+          end: expression.end,
+          callStart: callNode.start,
+          callEnd: callNode.end,
+          type,
+        });
+      }
     }
 
     if ('value' in computed && typeof computed.value === 'string') {
       if (!computed.wildcards) add(computed.value);
-      else if (computed.wildcards.length >= 1)
+      else if (computed.wildcards.length >= 1) {
+        if (job.trackLocations && callNode) {
+          addLocation(depLocations, computed.value, {
+            start: expression.start,
+            end: expression.end,
+            callStart: callNode.start,
+            callEnd: callNode.end,
+            type: 'glob',
+          });
+        }
         emitWildcardRequire(computed.value);
+      }
     } else {
       if ('ifTrue' in computed && typeof computed.ifTrue === 'string')
         add(computed.ifTrue);
@@ -658,7 +760,7 @@ export default async function analyze(
         staticChildNode = node;
         await backtrack(parent, this);
       } else if (node.type === 'ImportExpression') {
-        await processRequireArg(node.source, true);
+        await processRequireArg(node.source, true, node, 'dynamic-import');
         return;
       }
       // Call expression cases and asset triggers
@@ -678,7 +780,7 @@ export default async function analyze(
             knownBindings.require &&
             knownBindings.require.shadowDepth === 0
           ) {
-            await processRequireArg(node.arguments[0]);
+            await processRequireArg(node.arguments[0], false, node, 'require');
             return;
           }
         } else if (
@@ -692,7 +794,7 @@ export default async function analyze(
           node.callee.property.name === 'require' &&
           node.arguments.length
         ) {
-          await processRequireArg(node.arguments[0]);
+          await processRequireArg(node.arguments[0], false, node, 'require');
           return;
         } else if (
           (!isESM || job.mixedModules) &&
@@ -706,7 +808,12 @@ export default async function analyze(
           node.callee.property.name === 'resolve' &&
           node.arguments.length
         ) {
-          await processRequireArg(node.arguments[0]);
+          await processRequireArg(
+            node.arguments[0],
+            false,
+            node,
+            'require-resolve',
+          );
           return;
         }
 
@@ -726,6 +833,12 @@ export default async function analyze(
           // if it computes, then we start backtracking
           if (staticChildValue && parent) {
             staticChildNode = node;
+            // Determine location type from callee name
+            if (node.callee.type === 'MemberExpression') {
+              const prop = node.callee.property.name;
+              if (prop === 'join') staticLocationType = 'path-join';
+              else if (prop === 'resolve') staticLocationType = 'path-resolve';
+            }
             await backtrack(parent, this);
           }
         }
@@ -745,7 +858,12 @@ export default async function analyze(
                 (!knownBindings.require ||
                   knownBindings.require.shadowDepth === 0)
               ) {
-                await processRequireArg(node.arguments[0]);
+                await processRequireArg(
+                  node.arguments[0],
+                  false,
+                  node,
+                  'require',
+                );
               }
               break;
             // require('bindings')(...)
@@ -770,7 +888,9 @@ export default async function analyze(
                   } catch (e) {}
                   if (resolved) {
                     staticChildValue = { value: resolved };
-                    staticChildNode = node;
+                    staticChildNode = node.arguments[0];
+                    staticCallNode = node;
+                    staticLocationType = 'bindings';
                     await emitStaticChildAsset();
                   }
                 }
@@ -807,7 +927,9 @@ export default async function analyze(
                   }
                   if (resolved) {
                     staticChildValue = { value: resolved };
-                    staticChildNode = node;
+                    staticChildNode = node.arguments[0];
+                    staticCallNode = node;
+                    staticLocationType = 'node-gyp-build';
                     await emitStaticChildAsset();
                   }
                 }
@@ -845,7 +967,12 @@ export default async function analyze(
                 node.arguments[0].value === 'view engine' &&
                 !definedExpressEngines
               ) {
-                await processRequireArg(node.arguments[1]);
+                await processRequireArg(
+                  node.arguments[1],
+                  false,
+                  node,
+                  'require',
+                );
                 return this.skip();
               }
               break;
@@ -863,6 +990,8 @@ export default async function analyze(
                 // if it computes, then we start backtracking
                 if (staticChildValue) {
                   staticChildNode = node.arguments[0];
+                  staticCallNode = node;
+                  staticLocationType = 'fs';
                   if (
                     calleeValue.value === FS_DIR_FN &&
                     node.arguments[0].type === 'Identifier' &&
@@ -939,10 +1068,28 @@ export default async function analyze(
                       : './' + srcPath;
 
                     imports.add(relativeSrcPath);
+                    if (job.trackLocations) {
+                      addLocation(importLocations, relativeSrcPath, {
+                        start: node.arguments[0].start,
+                        end: node.arguments[0].end,
+                        callStart: node.start,
+                        callEnd: node.end,
+                        type: 'module-register',
+                      });
+                    }
                   }
                 } else {
                   // It's a bare specifier, so just add into the imports
                   imports.add(pathOrSpecifier);
+                  if (job.trackLocations) {
+                    addLocation(importLocations, pathOrSpecifier, {
+                      start: node.arguments[0].start,
+                      end: node.arguments[0].end,
+                      callStart: node.start,
+                      callEnd: node.end,
+                      type: 'module-register',
+                    });
+                  }
                 }
               }
               break;
@@ -1150,7 +1297,15 @@ export default async function analyze(
   });
 
   await assetEmissionPromises;
-  return { assets, deps, imports, isESM };
+  return {
+    assets,
+    deps,
+    imports,
+    isESM,
+    assetLocations,
+    depLocations,
+    importLocations,
+  };
 
   async function emitAssetPath(assetPath: string) {
     // verify the asset file / directory exists
@@ -1232,12 +1387,45 @@ export default async function analyze(
       return;
     }
 
+    const argNode = staticChildNode;
+    const callNode = staticCallNode;
+    const locType = staticLocationType;
+
+    function trackAssetLoc(resolved: string) {
+      if (!job.trackLocations || !argNode) return;
+      let effectiveArgNode = argNode;
+      let effectiveCallNode = callNode;
+      let effectiveType = locType ?? 'path-join';
+      // new URL('./x', import.meta.url) — staticChildNode is the NewExpression
+      if (
+        argNode.type === 'NewExpression' &&
+        argNode.callee.type === 'Identifier' &&
+        argNode.callee.name === 'URL' &&
+        argNode.arguments.length >= 1
+      ) {
+        effectiveArgNode = argNode.arguments[0];
+        effectiveCallNode = argNode;
+        effectiveType = 'new-url';
+      }
+      const loc: AssetLocation = {
+        start: effectiveArgNode.start,
+        end: effectiveArgNode.end,
+        type: effectiveType,
+      };
+      if (effectiveCallNode) {
+        loc.callStart = effectiveCallNode.start;
+        loc.callEnd = effectiveCallNode.end;
+      }
+      addLocation(assetLocations, resolved, loc);
+    }
+
     if (
       'value' in staticChildValue &&
       isAbsolutePathOrUrl(staticChildValue.value)
     ) {
       try {
         const resolved = resolveAbsolutePathOrUrl(staticChildValue.value);
+        trackAssetLoc(resolved);
         await emitAssetPath(resolved);
       } catch (e) {}
     } else if (
@@ -1254,8 +1442,14 @@ export default async function analyze(
       try {
         resolvedElse = resolveAbsolutePathOrUrl(staticChildValue.else);
       } catch (e) {}
-      if (resolvedThen) await emitAssetPath(resolvedThen);
-      if (resolvedElse) await emitAssetPath(resolvedElse);
+      if (resolvedThen) {
+        trackAssetLoc(resolvedThen);
+        await emitAssetPath(resolvedThen);
+      }
+      if (resolvedElse) {
+        trackAssetLoc(resolvedElse);
+        await emitAssetPath(resolvedElse);
+      }
     } else if (
       staticChildNode &&
       staticChildNode.type === 'ArrayExpression' &&
@@ -1265,11 +1459,16 @@ export default async function analyze(
       for (const value of staticChildValue.value) {
         try {
           const resolved = resolveAbsolutePathOrUrl(value);
+          trackAssetLoc(resolved);
           await emitAssetPath(resolved);
         } catch (e) {}
       }
     }
-    staticChildNode = staticChildValue = undefined;
+    staticChildNode =
+      staticChildValue =
+      staticCallNode =
+      staticLocationType =
+        undefined;
   }
 }
 
