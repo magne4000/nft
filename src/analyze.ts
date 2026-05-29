@@ -284,6 +284,20 @@ export default async function analyze(
     arr.push(loc);
   }
 
+  // null = no trackable source position (glob expansion, static-eval, no AST context)
+  function emitDep(value: string, loc: AssetLocation | null) {
+    deps.add(value);
+    if (loc && job.trackLocations) addLocation(depLocations, value, loc);
+  }
+  function emitImport(value: string, loc: AssetLocation | null) {
+    imports.add(value);
+    if (loc && job.trackLocations) addLocation(importLocations, value, loc);
+  }
+  function emitAsset(value: string, loc: AssetLocation | null) {
+    assets.add(value);
+    if (loc && job.trackLocations) addLocation(assetLocations, value, loc);
+  }
+
   const dir = path.dirname(id);
   // if (typeof options.production === 'boolean' && staticProcess.env.NODE_ENV === UNKNOWN)
   //  staticProcess.env.NODE_ENV = options.production ? 'production' : 'dev';
@@ -324,7 +338,7 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => assets.add(file));
+        .forEach((file) => emitAsset(file, null));
     });
   };
 
@@ -405,7 +419,7 @@ export default async function analyze(
       value: {
         value: {
           [FUNCTION](specifier: string) {
-            deps.add(specifier);
+            emitDep(specifier, null);
             const m =
               staticModules[
                 specifier.startsWith('node:') ? specifier.slice(5) : specifier
@@ -458,16 +472,13 @@ export default async function analyze(
     for (const decl of ast.body as Node[]) {
       if (decl.type === 'ImportDeclaration') {
         const source = String(decl.source.value);
-        deps.add(source);
-        if (job.trackLocations) {
-          addLocation(depLocations, source, {
-            start: decl.source.start,
-            end: decl.source.end,
-            callStart: decl.start,
-            callEnd: decl.end,
-            type: 'import',
-          });
-        }
+        emitDep(source, {
+          start: decl.source.start,
+          end: decl.source.end,
+          callStart: decl.start,
+          callEnd: decl.end,
+          type: 'import',
+        });
         const staticModule =
           staticModules[source.startsWith('node:') ? source.slice(5) : source];
         if (staticModule) {
@@ -494,16 +505,13 @@ export default async function analyze(
       ) {
         if (decl.source) {
           const source = String(decl.source.value);
-          deps.add(source);
-          if (job.trackLocations) {
-            addLocation(depLocations, source, {
-              start: decl.source.start,
-              end: decl.source.end,
-              callStart: decl.start,
-              callEnd: decl.end,
-              type: 'import',
-            });
-          }
+          emitDep(source, {
+            start: decl.source.start,
+            end: decl.source.end,
+            callStart: decl.start,
+            callEnd: decl.end,
+            type: 'import',
+          });
         }
       }
     }
@@ -579,7 +587,7 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => deps.add(file));
+        .forEach((file) => emitDep(file, null));
     });
   }
 
@@ -623,19 +631,16 @@ export default async function analyze(
     let computed = await computePureStaticValue(expression, true);
     if (!computed) return;
 
-    const locMap = isImport ? importLocations : depLocations;
-
     function add(value: string) {
-      (isImport ? imports : deps).add(value);
-      if (job.trackLocations) {
-        addLocation(locMap, value, {
-          start: expression.start,
-          end: expression.end,
-          callStart: callNode.start,
-          callEnd: callNode.end,
-          type: locationType,
-        });
-      }
+      const loc: AssetLocation = {
+        start: expression.start,
+        end: expression.end,
+        callStart: callNode.start,
+        callEnd: callNode.end,
+        type: locationType,
+      };
+      if (isImport) emitImport(value, loc);
+      else emitDep(value, loc);
     }
 
     if ('value' in computed && typeof computed.value === 'string') {
@@ -666,8 +671,8 @@ export default async function analyze(
     await handleSpecialCases({
       id,
       ast,
-      emitDependency: (path) => deps.add(path),
-      emitAsset: (path) => assets.add(path),
+      emitDependency: (dep) => emitDep(dep, null),
+      emitAsset: (asset) => emitAsset(asset, null),
       emitAssetDirectory,
       job,
     });
@@ -945,8 +950,15 @@ export default async function analyze(
                 ) {
                   const bindingInfo = nbind(arg.value);
                   if (bindingInfo && bindingInfo.path) {
-                    deps.add(
+                    emitDep(
                       path.relative(dir, bindingInfo.path).replace(/\\/g, '/'),
+                      {
+                        start: node.arguments[0].start,
+                        end: node.arguments[0].end,
+                        callStart: node.start,
+                        callEnd: node.end,
+                        type: 'nbind',
+                      },
                     );
                     return this.skip();
                   }
@@ -1022,7 +1034,7 @@ export default async function analyze(
                 (await job.stat(pjsonPath)) === null
               )
                 pjsonPath = path.resolve(pjsonPath, '../../package.json');
-              if (pjsonPath !== rootPjson) assets.add(pjsonPath);
+              if (pjsonPath !== rootPjson) emitAsset(pjsonPath, null);
               break;
             case MODULE_FN:
               if (
@@ -1062,22 +1074,7 @@ export default async function analyze(
                       ? srcPath
                       : './' + srcPath;
 
-                    imports.add(relativeSrcPath);
-                    if (job.trackLocations) {
-                      addLocation(importLocations, relativeSrcPath, {
-                        start: node.arguments[0].start,
-                        end: node.arguments[0].end,
-                        callStart: node.start,
-                        callEnd: node.end,
-                        type: 'module-register',
-                      });
-                    }
-                  }
-                } else {
-                  // It's a bare specifier, so just add into the imports
-                  imports.add(pathOrSpecifier);
-                  if (job.trackLocations) {
-                    addLocation(importLocations, pathOrSpecifier, {
+                    emitImport(relativeSrcPath, {
                       start: node.arguments[0].start,
                       end: node.arguments[0].end,
                       callStart: node.start,
@@ -1085,6 +1082,15 @@ export default async function analyze(
                       type: 'module-register',
                     });
                   }
+                } else {
+                  // It's a bare specifier, so just add into the imports
+                  emitImport(pathOrSpecifier, {
+                    start: node.arguments[0].start,
+                    end: node.arguments[0].end,
+                    callStart: node.start,
+                    callEnd: node.end,
+                    type: 'module-register',
+                  });
                 }
               }
               break;
@@ -1320,7 +1326,7 @@ export default async function analyze(
     }
     if (wildcardIndex !== -1 && stats.isFile()) return;
     if (stats.isFile()) {
-      assets.add(assetPath);
+      emitAsset(assetPath, null);
     } else if (stats.isDirectory()) {
       if (validWildcard(assetPath)) emitAssetDirectory(assetPath);
     }
