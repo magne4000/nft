@@ -4,49 +4,86 @@ import resolveDependency from '../resolve-dependency';
 import { getPackageName } from './get-package-base';
 import { readFileSync } from 'graceful-fs';
 import { Job } from '../node-file-trace';
-import { Ast } from './types';
+import { Ast, Node as LocNode } from './types';
 type Node = Ast['body'][0];
 
+// The asset paths emitted by these handlers are computed from package-specific
+// knowledge, not from a literal in the source. The closest source anchor is the
+// `require()` that pulled the package in, so locations are reported against it.
+function isRequireCall(node: Node | null | undefined): boolean {
+  return (
+    !!node &&
+    node.type === 'CallExpression' &&
+    node.callee.type === 'Identifier' &&
+    node.callee.name === 'require'
+  );
+}
+
+function firstRequireCall(ast: Ast): LocNode | undefined {
+  for (const statement of ast.body) {
+    // require('x') / module.exports = require('x')
+    if (statement.type === 'ExpressionStatement') {
+      const expr = statement.expression;
+      if (isRequireCall(expr)) return expr as unknown as LocNode;
+      if (expr.type === 'AssignmentExpression' && isRequireCall(expr.right))
+        return expr.right as unknown as LocNode;
+    }
+    // const x = require('x')
+    if (statement.type === 'VariableDeclaration') {
+      for (const decl of statement.declarations) {
+        if (isRequireCall(decl.init)) return decl.init as unknown as LocNode;
+      }
+    }
+  }
+  return undefined;
+}
+
 const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
-  '@generated/photon'({ id, emitAssetDirectory }) {
+  '@generated/photon'({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('@generated/photon/index.js')) {
-      emitAssetDirectory(resolve(dirname(id), 'runtime/'));
+      emitAssetDirectory(
+        resolve(dirname(id), 'runtime/'),
+        firstRequireCall(ast),
+      );
     }
   },
-  '@serialport/bindings-cpp'({ id, emitAssetDirectory }) {
+  '@serialport/bindings-cpp'({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('@serialport/bindings-cpp/dist/index.js')) {
-      emitAssetDirectory(resolve(dirname(id), '..', 'build', 'Release'));
-      emitAssetDirectory(resolve(dirname(id), '..', 'prebuilds'));
+      const node = firstRequireCall(ast);
+      emitAssetDirectory(resolve(dirname(id), '..', 'build', 'Release'), node);
+      emitAssetDirectory(resolve(dirname(id), '..', 'prebuilds'), node);
     }
   },
-  argon2({ id, emitAssetDirectory }) {
+  argon2({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('argon2/argon2.js')) {
-      emitAssetDirectory(resolve(dirname(id), 'build', 'Release'));
-      emitAssetDirectory(resolve(dirname(id), 'prebuilds'));
-      emitAssetDirectory(resolve(dirname(id), 'lib', 'binding'));
+      const node = firstRequireCall(ast);
+      emitAssetDirectory(resolve(dirname(id), 'build', 'Release'), node);
+      emitAssetDirectory(resolve(dirname(id), 'prebuilds'), node);
+      emitAssetDirectory(resolve(dirname(id), 'lib', 'binding'), node);
     }
   },
-  bull({ id, emitAssetDirectory }) {
+  bull({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('bull/lib/commands/index.js')) {
-      emitAssetDirectory(resolve(dirname(id)));
+      emitAssetDirectory(resolve(dirname(id)), firstRequireCall(ast));
     }
   },
-  camaro({ id, emitAsset }) {
+  camaro({ id, ast, emitAsset }) {
     if (id.endsWith('camaro/dist/camaro.js')) {
-      emitAsset(resolve(dirname(id), 'camaro.wasm'));
+      emitAsset(resolve(dirname(id), 'camaro.wasm'), firstRequireCall(ast));
     }
   },
-  esbuild({ id, emitAssetDirectory }) {
+  esbuild({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('esbuild/lib/main.js')) {
+      const node = firstRequireCall(ast);
       const file = resolve(id, '..', '..', 'package.json');
       const pkg = JSON.parse(readFileSync(file, 'utf8'));
       for (const dep of Object.keys(pkg.optionalDependencies || {})) {
         const dir = resolve(id, '..', '..', '..', dep);
-        emitAssetDirectory(dir);
+        emitAssetDirectory(dir, node);
       }
     }
   },
-  'ffmpeg-static'({ id, emitAsset }) {
+  'ffmpeg-static'({ id, ast, emitAsset }) {
     if (id.endsWith('ffmpeg-static/index.js')) {
       const dir = dirname(id);
       const ext = process.platform === 'win32' ? '.exe' : '';
@@ -55,7 +92,7 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
         resolve(dir, 'bin', process.platform, process.arch, `ffmpeg${ext}`),
       ].find((file) => existsSync(file));
       if (binaryPath) {
-        emitAsset(binaryPath);
+        emitAsset(binaryPath, firstRequireCall(ast));
       }
     }
   },
@@ -72,6 +109,7 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
         ) {
           emitAssetDirectory(
             resolve(dirname(id), '../../../google-proto-files'),
+            firstRequireCall(ast),
           );
         }
       }
@@ -117,6 +155,8 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
           statement.body.body[0].block.body[0].expression.right.arguments[0]
             .property.name === 'i'
         ) {
+          const requireCall = statement.body.body[0].block.body[0].expression
+            .right as unknown as LocNode;
           statement.body.body[0].block.body[0].expression.right.arguments = [
             { type: 'Literal', value: '_' },
           ];
@@ -135,40 +175,53 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
             '-' +
             process.arch +
             '.node';
-          emitAsset(resolve(id, '../../build/Release/' + binaryName));
+          emitAsset(
+            resolve(id, '../../build/Release/' + binaryName),
+            requireCall,
+          );
         }
       }
     }
   },
-  'phantomjs-prebuilt'({ id, emitAssetDirectory }) {
+  'phantomjs-prebuilt'({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('phantomjs-prebuilt/lib/phantomjs.js')) {
-      emitAssetDirectory(resolve(dirname(id), '..', 'bin'));
+      emitAssetDirectory(
+        resolve(dirname(id), '..', 'bin'),
+        firstRequireCall(ast),
+      );
     }
   },
-  'remark-prism'({ id, emitAssetDirectory }) {
+  'remark-prism'({ id, ast, emitAssetDirectory }) {
     const file = 'remark-prism/src/highlight.js';
     if (id.endsWith(file)) {
       try {
         const node_modules = id.slice(0, -file.length);
-        emitAssetDirectory(resolve(node_modules, 'prismjs', 'components'));
+        emitAssetDirectory(
+          resolve(node_modules, 'prismjs', 'components'),
+          firstRequireCall(ast),
+        );
       } catch (e) {
         // fail silently
       }
     }
   },
-  semver({ id, emitAsset }) {
+  semver({ id, ast, emitAsset }) {
     if (id.endsWith('semver/index.js')) {
       // See https://github.com/npm/node-semver/blob/master/CHANGELOG.md#710
-      emitAsset(resolve(id.replace('index.js', 'preload.js')));
+      emitAsset(
+        resolve(id.replace('index.js', 'preload.js')),
+        firstRequireCall(ast),
+      );
     }
   },
-  sharp: async ({ id, emitAssetDirectory, job }) => {
+  sharp: async ({ id, ast, emitAssetDirectory, job }) => {
     if (id.endsWith('sharp/lib/index.js')) {
+      const node = firstRequireCall(ast);
       const file = resolve(id, '..', '..', 'package.json');
       const pkg = JSON.parse(readFileSync(file, 'utf8'));
       for (const dep of Object.keys(pkg.optionalDependencies || {})) {
         const dir = resolve(id, '..', '..', '..', dep);
-        emitAssetDirectory(dir);
+        emitAssetDirectory(dir, node);
 
         try {
           const file = resolve(dir, 'package.json');
@@ -180,7 +233,7 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
               '..',
               innerDep,
             );
-            emitAssetDirectory(innerDir);
+            emitAssetDirectory(innerDir, node);
           }
         } catch (err: any) {
           if (err && err.code !== 'ENOENT') {
@@ -193,10 +246,11 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
       }
     }
   },
-  shiki({ id, emitAssetDirectory }) {
+  shiki({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('/dist/index.js')) {
-      emitAssetDirectory(resolve(dirname(id), '..', 'languages'));
-      emitAssetDirectory(resolve(dirname(id), '..', 'themes'));
+      const node = firstRequireCall(ast);
+      emitAssetDirectory(resolve(dirname(id), '..', 'languages'), node);
+      emitAssetDirectory(resolve(dirname(id), '..', 'themes'), node);
     }
   },
   'socket.io': async function ({ id, ast, job }) {
@@ -305,55 +359,61 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
       }
     }
   },
-  typescript({ id, emitAssetDirectory }) {
+  typescript({ id, ast, emitAssetDirectory }) {
     if (id.endsWith('typescript/lib/tsc.js')) {
-      emitAssetDirectory(resolve(id, '../'));
+      emitAssetDirectory(resolve(id, '../'), firstRequireCall(ast));
     }
   },
-  'uglify-es'({ id, emitAsset }) {
+  'uglify-es'({ id, ast, emitAsset }) {
     if (id.endsWith('uglify-es/tools/node.js')) {
-      emitAsset(resolve(id, '../../lib/utils.js'));
-      emitAsset(resolve(id, '../../lib/ast.js'));
-      emitAsset(resolve(id, '../../lib/parse.js'));
-      emitAsset(resolve(id, '../../lib/transform.js'));
-      emitAsset(resolve(id, '../../lib/scope.js'));
-      emitAsset(resolve(id, '../../lib/output.js'));
-      emitAsset(resolve(id, '../../lib/compress.js'));
-      emitAsset(resolve(id, '../../lib/sourcemap.js'));
-      emitAsset(resolve(id, '../../lib/mozilla-ast.js'));
-      emitAsset(resolve(id, '../../lib/propmangle.js'));
-      emitAsset(resolve(id, '../../lib/minify.js'));
-      emitAsset(resolve(id, '../exports.js'));
+      const node = firstRequireCall(ast);
+      emitAsset(resolve(id, '../../lib/utils.js'), node);
+      emitAsset(resolve(id, '../../lib/ast.js'), node);
+      emitAsset(resolve(id, '../../lib/parse.js'), node);
+      emitAsset(resolve(id, '../../lib/transform.js'), node);
+      emitAsset(resolve(id, '../../lib/scope.js'), node);
+      emitAsset(resolve(id, '../../lib/output.js'), node);
+      emitAsset(resolve(id, '../../lib/compress.js'), node);
+      emitAsset(resolve(id, '../../lib/sourcemap.js'), node);
+      emitAsset(resolve(id, '../../lib/mozilla-ast.js'), node);
+      emitAsset(resolve(id, '../../lib/propmangle.js'), node);
+      emitAsset(resolve(id, '../../lib/minify.js'), node);
+      emitAsset(resolve(id, '../exports.js'), node);
     }
   },
-  'uglify-js'({ id, emitAsset, emitAssetDirectory }) {
+  'uglify-js'({ id, ast, emitAsset, emitAssetDirectory }) {
     if (id.endsWith('uglify-js/tools/node.js')) {
-      emitAssetDirectory(resolve(id, '../../lib'));
-      emitAsset(resolve(id, '../exports.js'));
+      const node = firstRequireCall(ast);
+      emitAssetDirectory(resolve(id, '../../lib'), node);
+      emitAsset(resolve(id, '../exports.js'), node);
     }
   },
-  'playwright-core'({ id, emitAsset }) {
+  'playwright-core'({ id, ast, emitAsset }) {
     if (id.endsWith('playwright-core/index.js')) {
-      emitAsset(resolve(dirname(id), 'browsers.json'));
+      emitAsset(resolve(dirname(id), 'browsers.json'), firstRequireCall(ast));
     }
   },
-  'geo-tz'({ id, emitAsset }) {
+  'geo-tz'({ id, ast, emitAsset }) {
     if (id.endsWith('geo-tz/dist/geo-tz.js')) {
-      emitAsset(resolve(dirname(id), '../data/geo.dat'));
+      emitAsset(resolve(dirname(id), '../data/geo.dat'), firstRequireCall(ast));
     }
   },
-  pixelmatch({ id, emitDependency }) {
+  pixelmatch({ id, ast, emitDependency }) {
     if (id.endsWith('pixelmatch/index.js')) {
-      emitDependency(resolve(dirname(id), 'bin/pixelmatch'));
+      emitDependency(
+        resolve(dirname(id), 'bin/pixelmatch'),
+        firstRequireCall(ast),
+      );
     }
   },
-  'geoip-lite'({ id, emitAsset }) {
+  'geoip-lite'({ id, ast, emitAsset }) {
     if (id.endsWith('geoip-lite/lib/geoip.js')) {
-      emitAsset(resolve(dirname(id), '../data/geoip-city.dat'));
-      emitAsset(resolve(dirname(id), '../data/geoip-city6.dat'));
-      emitAsset(resolve(dirname(id), '../data/geoip-city-names.dat'));
-      emitAsset(resolve(dirname(id), '../data/geoip-country.dat'));
-      emitAsset(resolve(dirname(id), '../data/geoip-country6.dat'));
+      const node = firstRequireCall(ast);
+      emitAsset(resolve(dirname(id), '../data/geoip-city.dat'), node);
+      emitAsset(resolve(dirname(id), '../data/geoip-city6.dat'), node);
+      emitAsset(resolve(dirname(id), '../data/geoip-city-names.dat'), node);
+      emitAsset(resolve(dirname(id), '../data/geoip-country.dat'), node);
+      emitAsset(resolve(dirname(id), '../data/geoip-country6.dat'), node);
     }
   },
 };
@@ -361,9 +421,9 @@ const specialCases: Record<string, (o: SpecialCaseOpts) => void> = {
 interface SpecialCaseOpts {
   id: string;
   ast: Ast;
-  emitDependency: (filename: string) => void;
-  emitAsset: (filename: string) => void;
-  emitAssetDirectory: (dirname: string) => void;
+  emitDependency: (filename: string, node?: LocNode) => void;
+  emitAsset: (filename: string, node?: LocNode) => void;
+  emitAssetDirectory: (dirname: string, node?: LocNode) => void;
   job: Job;
 }
 

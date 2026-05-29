@@ -336,7 +336,36 @@ describe('module.register() location tracking', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. Verifies trackLocations: false produces no fileLocations
+// 10. Special-case package emissions are anchored at the package's require()
+// ---------------------------------------------------------------------------
+
+describe('special-case asset location tracking', () => {
+  it('anchors shiki language/theme assets at the entry require()', async () => {
+    const fs = require('fs');
+    const entry = require.resolve('shiki');
+    const source = fs.readFileSync(entry, 'utf8');
+    const rel = path.basename(entry); // 'index.js'
+
+    const { fileLocations } = await nodeFileTrace([entry], {
+      trackLocations: true,
+    });
+
+    const entryKey = [...fileLocations.keys()].find((k) => k.endsWith(rel));
+    const requireLocs = [];
+    for (const arr of fileLocations.get(entryKey).assetLocations.values()) {
+      for (const loc of arr) if (loc.type === 'require') requireLocs.push(loc);
+    }
+
+    expect(requireLocs.length).toBeGreaterThan(0);
+    for (const loc of requireLocs) {
+      expect(loc.start).toBeLessThan(loc.end);
+      expect(source.slice(loc.start, loc.end)).toMatch(/^require\(/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Verifies trackLocations: false produces no fileLocations
 // ---------------------------------------------------------------------------
 
 describe('trackLocations option', () => {

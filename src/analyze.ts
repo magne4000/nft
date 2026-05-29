@@ -348,13 +348,21 @@ export default async function analyze(
     if (loc && job.trackLocations) addLocation(assetLocations, value, loc);
   }
 
+  // Special-case emissions have no asset literal in source; the closest anchor
+  // is the `require()` that loaded the package, passed through as `node`.
+  function requireLoc(node?: Node): AssetLocation | null {
+    return node && job.trackLocations
+      ? { start: node.start, end: node.end, type: 'require' }
+      : null;
+  }
+
   const dir = path.dirname(id);
   // if (typeof options.production === 'boolean' && staticProcess.env.NODE_ENV === UNKNOWN)
   //  staticProcess.env.NODE_ENV = options.production ? 'production' : 'dev';
   cwd = job.cwd;
   const pkgBase = getPackageBase(id);
 
-  const emitAssetDirectory = (wildcardPath: string) => {
+  const emitAssetDirectory = (wildcardPath: string, node?: Node) => {
     if (!job.analysis.emitGlobs) return;
     wildcardPath = wildcardPath.replaceAll(path.sep, path.posix.sep);
     const wildcardIndex = wildcardPath.indexOf(WILDCARD);
@@ -382,13 +390,14 @@ export default async function analyze(
         dot: true,
         nodir: true,
       });
+      const loc = requireLoc(node);
       files
         .filter(
           (name) =>
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => emitAsset(file, null));
+        .forEach((file) => emitAsset(file, loc));
     });
   };
 
@@ -721,8 +730,8 @@ export default async function analyze(
     await handleSpecialCases({
       id,
       ast,
-      emitDependency: (dep) => emitDep(dep, null),
-      emitAsset: (asset) => emitAsset(asset, null),
+      emitDependency: (dep, node) => emitDep(dep, requireLoc(node)),
+      emitAsset: (asset, node) => emitAsset(asset, requireLoc(node)),
       emitAssetDirectory,
       job,
     });
