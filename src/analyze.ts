@@ -349,10 +349,11 @@ export default async function analyze(
   }
 
   // Special-case emissions have no asset literal in source; the closest anchor
-  // is the `require()` that loaded the package, passed through as `node`.
-  function requireLoc(node?: Node): AssetLocation | null {
+  // is the `require()` that loaded the package, passed through as `node`. They
+  // get their own type so consumers can tell them apart from a direct reference.
+  function specialCaseLoc(node?: Node): AssetLocation | null {
     return node && job.trackLocations
-      ? { start: node.start, end: node.end, type: 'require' }
+      ? { start: node.start, end: node.end, type: 'special-case' }
       : null;
   }
 
@@ -390,7 +391,7 @@ export default async function analyze(
         dot: true,
         nodir: true,
       });
-      const loc = requireLoc(node);
+      const loc = specialCaseLoc(node);
       files
         .filter(
           (name) =>
@@ -730,8 +731,8 @@ export default async function analyze(
     await handleSpecialCases({
       id,
       ast,
-      emitDependency: (dep, node) => emitDep(dep, requireLoc(node)),
-      emitAsset: (asset, node) => emitAsset(asset, requireLoc(node)),
+      emitDependency: (dep, node) => emitDep(dep, specialCaseLoc(node)),
+      emitAsset: (asset, node) => emitAsset(asset, specialCaseLoc(node)),
       emitAssetDirectory,
       job,
     });

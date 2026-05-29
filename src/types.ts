@@ -13,7 +13,8 @@ export type LocationType =
   | 'node-gyp-build'
   | 'module-register'
   | 'glob'
-  | 'nbind';
+  | 'nbind'
+  | 'special-case';
 
 export interface AssetLocation {
   start: number;

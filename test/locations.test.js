@@ -351,13 +351,15 @@ describe('special-case asset location tracking', () => {
     });
 
     const entryKey = [...fileLocations.keys()].find((k) => k.endsWith(rel));
-    const requireLocs = [];
+    const specialCaseLocs = [];
     for (const arr of fileLocations.get(entryKey).assetLocations.values()) {
-      for (const loc of arr) if (loc.type === 'require') requireLocs.push(loc);
+      for (const loc of arr)
+        if (loc.type === 'special-case') specialCaseLocs.push(loc);
     }
 
-    expect(requireLocs.length).toBeGreaterThan(0);
-    for (const loc of requireLocs) {
+    expect(specialCaseLocs.length).toBeGreaterThan(0);
+    for (const loc of specialCaseLocs) {
+      // anchored at the package's require(), not a direct asset reference
       expect(loc.start).toBeLessThan(loc.end);
       expect(source.slice(loc.start, loc.end)).toMatch(/^require\(/);
     }
