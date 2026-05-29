@@ -321,38 +321,49 @@ export default async function analyze(
   const depLocations = new Map<string, AssetLocation[]>();
   const importLocations = new Map<string, AssetLocation[]>();
 
+  // The single gate for location data: a no-op unless opted in via trackLocations.
   function addLocation(
     map: Map<string, AssetLocation[]>,
     key: string,
-    loc: AssetLocation,
+    loc: AssetLocation | null,
   ) {
+    if (!loc || !job.trackLocations) return;
     let arr = map.get(key);
-    if (!arr) {
-      arr = [];
-      map.set(key, arr);
-    }
+    if (!arr) map.set(key, (arr = []));
     arr.push(loc);
   }
 
-  // null = no trackable source position (glob expansion, static-eval, no AST context)
+  // loc is null when the value has no trackable source position
+  // (glob expansion, static-eval, no AST context).
   function emitDep(value: string, loc: AssetLocation | null) {
     deps.add(value);
-    if (loc && job.trackLocations) addLocation(depLocations, value, loc);
+    addLocation(depLocations, value, loc);
   }
   function emitImport(value: string, loc: AssetLocation | null) {
     imports.add(value);
-    if (loc && job.trackLocations) addLocation(importLocations, value, loc);
+    addLocation(importLocations, value, loc);
   }
   function emitAsset(value: string, loc: AssetLocation | null) {
     assets.add(value);
-    if (loc && job.trackLocations) addLocation(assetLocations, value, loc);
+    addLocation(assetLocations, value, loc);
+  }
+
+  // A reference whose path expression (`arg`) sits inside an enclosing call.
+  function refLoc(arg: Node, call: Node, type: LocationType): AssetLocation {
+    return {
+      start: arg.start,
+      end: arg.end,
+      callStart: call.start,
+      callEnd: call.end,
+      type,
+    };
   }
 
   // Special-case emissions have no asset literal in source; the closest anchor
-  // is the `require()` that loaded the package, passed through as `node`. They
-  // get their own type so consumers can tell them apart from a direct reference.
+  // is the `require()` that loaded the package. Their own type lets consumers
+  // tell them apart from a direct reference.
   function specialCaseLoc(node?: Node): AssetLocation | null {
-    return node && job.trackLocations
+    return node
       ? { start: node.start, end: node.end, type: 'special-case' }
       : null;
   }
@@ -532,13 +543,7 @@ export default async function analyze(
     for (const decl of ast.body as Node[]) {
       if (decl.type === 'ImportDeclaration') {
         const source = String(decl.source.value);
-        emitDep(source, {
-          start: decl.source.start,
-          end: decl.source.end,
-          callStart: decl.start,
-          callEnd: decl.end,
-          type: 'import',
-        });
+        emitDep(source, refLoc(decl.source, decl, 'import'));
         const staticModule =
           staticModules[source.startsWith('node:') ? source.slice(5) : source];
         if (staticModule) {
@@ -565,13 +570,7 @@ export default async function analyze(
       ) {
         if (decl.source) {
           const source = String(decl.source.value);
-          emitDep(source, {
-            start: decl.source.start,
-            end: decl.source.end,
-            callStart: decl.start,
-            callEnd: decl.end,
-            type: 'import',
-          });
+          emitDep(source, refLoc(decl.source, decl, 'import'));
         }
       }
     }
@@ -692,13 +691,7 @@ export default async function analyze(
     if (!computed) return;
 
     function add(value: string) {
-      const loc: AssetLocation = {
-        start: expression.start,
-        end: expression.end,
-        callStart: callNode.start,
-        callEnd: callNode.end,
-        type: locationType,
-      };
+      const loc = refLoc(expression, callNode, locationType);
       if (isImport) emitImport(value, loc);
       else emitDep(value, loc);
     }
@@ -706,15 +699,11 @@ export default async function analyze(
     if ('value' in computed && typeof computed.value === 'string') {
       if (!computed.wildcards) add(computed.value);
       else if (computed.wildcards.length >= 1) {
-        if (job.trackLocations) {
-          addLocation(depLocations, computed.value, {
-            start: expression.start,
-            end: expression.end,
-            callStart: callNode.start,
-            callEnd: callNode.end,
-            type: 'glob',
-          });
-        }
+        addLocation(
+          depLocations,
+          computed.value,
+          refLoc(expression, callNode, 'glob'),
+        );
         emitWildcardRequire(computed.value);
       }
     } else {
@@ -1012,13 +1001,7 @@ export default async function analyze(
                   if (bindingInfo && bindingInfo.path) {
                     emitDep(
                       path.relative(dir, bindingInfo.path).replace(/\\/g, '/'),
-                      {
-                        start: node.arguments[0].start,
-                        end: node.arguments[0].end,
-                        callStart: node.start,
-                        callEnd: node.end,
-                        type: 'nbind',
-                      },
+                      refLoc(node.arguments[0], node, 'nbind'),
                     );
                     return this.skip();
                   }
@@ -1181,23 +1164,17 @@ export default async function analyze(
                       ? srcPath
                       : './' + srcPath;
 
-                    emitImport(relativeSrcPath, {
-                      start: node.arguments[0].start,
-                      end: node.arguments[0].end,
-                      callStart: node.start,
-                      callEnd: node.end,
-                      type: 'module-register',
-                    });
+                    emitImport(
+                      relativeSrcPath,
+                      refLoc(node.arguments[0], node, 'module-register'),
+                    );
                   }
                 } else {
                   // It's a bare specifier, so just add into the imports
-                  emitImport(pathOrSpecifier, {
-                    start: node.arguments[0].start,
-                    end: node.arguments[0].end,
-                    callStart: node.start,
-                    callEnd: node.end,
-                    type: 'module-register',
-                  });
+                  emitImport(
+                    pathOrSpecifier,
+                    refLoc(node.arguments[0], node, 'module-register'),
+                  );
                 }
               }
               break;
@@ -1562,21 +1539,16 @@ export default async function analyze(
     function trackAssetLoc(resolved: string) {
       if (!job.trackLocations) return;
       const newUrl = unwrapNewUrl(argNode);
-      const effectiveArg = newUrl ? newUrl.arg : argNode;
-      const effectiveCall = newUrl ? newUrl.call : callNode;
-      const effectiveType: LocationType = newUrl
-        ? 'new-url'
-        : locType ?? 'path-join';
-      const loc: AssetLocation = {
-        start: effectiveArg.start,
-        end: effectiveArg.end,
-        type: effectiveType,
-      };
-      if (effectiveCall) {
-        loc.callStart = effectiveCall.start;
-        loc.callEnd = effectiveCall.end;
-      }
-      addLocation(assetLocations, resolved, loc);
+      const arg = newUrl ? newUrl.arg : argNode;
+      const call = newUrl ? newUrl.call : callNode;
+      const type: LocationType = newUrl ? 'new-url' : locType ?? 'path-join';
+      addLocation(
+        assetLocations,
+        resolved,
+        call
+          ? refLoc(arg, call, type)
+          : { start: arg.start, end: arg.end, type },
+      );
     }
 
     if (
@@ -1611,7 +1583,6 @@ export default async function analyze(
         await emitAssetPath(resolvedElse);
       }
     } else if (
-      staticChildNode &&
       staticChildNode.type === 'ArrayExpression' &&
       'value' in staticChildValue &&
       staticChildValue.value instanceof Array
