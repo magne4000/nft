@@ -12,17 +12,12 @@ export type LocationType =
   | 'bindings'
   | 'node-gyp-build'
   | 'module-register'
-  | 'module-createRequire'
   | 'glob';
 
 export interface AssetLocation {
-  /** Start offset (inclusive) of the path expression in the source string */
   start: number;
-  /** End offset (exclusive) of the path expression in the source string */
   end: number;
-  /** Start offset of the outer call expression, if different from start */
   callStart?: number;
-  /** End offset of the outer call expression, if different from end */
   callEnd?: number;
   type: LocationType;
 }

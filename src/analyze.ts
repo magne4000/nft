@@ -505,8 +505,7 @@ export default async function analyze(
   }
 
   if ((isESM || job.mixedModules) && isAst(ast)) {
-    for (const _decl of ast.body) {
-      const decl = _decl as Node;
+    for (const decl of ast.body as Node[]) {
       if (decl.type === 'ImportDeclaration') {
         const source = String(decl.source.value);
         deps.add(source);
@@ -578,9 +577,7 @@ export default async function analyze(
   // greatest parent statically known leaf computation corresponds to an asset path
   let staticChildNode: Node | undefined;
   let staticChildValue: EvaluatedValue;
-  // outer call node for asset location tracking (e.g. fs.readFileSync node)
   let staticCallNode: Node | undefined;
-  // location type hint set before calling emitStaticChildAsset()
   let staticLocationType: LocationType | undefined;
 
   // Express engine opt-out
@@ -638,9 +635,9 @@ export default async function analyze(
 
   async function processRequireArg(
     expression: Node,
-    isImport = false,
-    callNode?: Node,
-    locationType?: LocationType,
+    isImport: boolean,
+    callNode: Node,
+    locationType: LocationType,
   ) {
     if (expression.type === 'ConditionalExpression') {
       await processRequireArg(
@@ -676,19 +673,17 @@ export default async function analyze(
     let computed = await computePureStaticValue(expression, true);
     if (!computed) return;
 
-    const type: LocationType =
-      locationType ?? (isImport ? 'dynamic-import' : 'require');
     const locMap = isImport ? importLocations : depLocations;
 
     function add(value: string) {
       (isImport ? imports : deps).add(value);
-      if (job.trackLocations && callNode) {
+      if (job.trackLocations) {
         addLocation(locMap, value, {
           start: expression.start,
           end: expression.end,
           callStart: callNode.start,
           callEnd: callNode.end,
-          type,
+          type: locationType,
         });
       }
     }
@@ -696,7 +691,7 @@ export default async function analyze(
     if ('value' in computed && typeof computed.value === 'string') {
       if (!computed.wildcards) add(computed.value);
       else if (computed.wildcards.length >= 1) {
-        if (job.trackLocations && callNode) {
+        if (job.trackLocations) {
           addLocation(depLocations, computed.value, {
             start: expression.start,
             end: expression.end,
@@ -1038,9 +1033,8 @@ export default async function analyze(
                 node.arguments.length >= 1 &&
                 node.arguments[0].type === 'ObjectExpression'
               ) {
-                await processPinoTransportObject(
-                  node.arguments[0],
-                  processRequireArg,
+                await processPinoTransportObject(node.arguments[0], (arg) =>
+                  processRequireArg(arg, false, node, 'require'),
                 );
                 return this.skip();
               }
@@ -1069,7 +1063,8 @@ export default async function analyze(
                       ) {
                         await processPinoTransportObject(
                           loggerProp.value,
-                          processRequireArg,
+                          (arg) =>
+                            processRequireArg(arg, false, node, 'require'),
                         );
                       }
                     }
@@ -1213,7 +1208,9 @@ export default async function analyze(
               prop.key.name === 'transport' &&
               prop.value.type === 'ObjectExpression'
             ) {
-              await processPinoTransportObject(prop.value, processRequireArg);
+              await processPinoTransportObject(prop.value, (arg) =>
+                processRequireArg(arg, false, node, 'require'),
+              );
             }
           }
         }
@@ -1528,39 +1525,40 @@ export default async function analyze(
         : path.resolve(value);
   }
 
+  function unwrapNewUrl(node: Node): { arg: Node; call: Node } | undefined {
+    if (
+      node.type === 'NewExpression' &&
+      node.callee.type === 'Identifier' &&
+      node.callee.name === 'URL' &&
+      node.arguments.length >= 1
+    )
+      return { arg: node.arguments[0], call: node };
+    return undefined;
+  }
+
   async function emitStaticChildAsset() {
-    if (!staticChildValue) {
-      return;
-    }
+    if (!staticChildValue || !staticChildNode) return;
 
     const argNode = staticChildNode;
     const callNode = staticCallNode;
     const locType = staticLocationType;
 
     function trackAssetLoc(resolved: string) {
-      if (!job.trackLocations || !argNode) return;
-      let effectiveArgNode = argNode;
-      let effectiveCallNode = callNode;
-      let effectiveType = locType ?? 'path-join';
-      // new URL('./x', import.meta.url) — staticChildNode is the NewExpression
-      if (
-        argNode.type === 'NewExpression' &&
-        argNode.callee.type === 'Identifier' &&
-        argNode.callee.name === 'URL' &&
-        argNode.arguments.length >= 1
-      ) {
-        effectiveArgNode = argNode.arguments[0];
-        effectiveCallNode = argNode;
-        effectiveType = 'new-url';
-      }
+      if (!job.trackLocations) return;
+      const newUrl = unwrapNewUrl(argNode);
+      const effectiveArg = newUrl ? newUrl.arg : argNode;
+      const effectiveCall = newUrl ? newUrl.call : callNode;
+      const effectiveType: LocationType = newUrl
+        ? 'new-url'
+        : locType ?? 'path-join';
       const loc: AssetLocation = {
-        start: effectiveArgNode.start,
-        end: effectiveArgNode.end,
+        start: effectiveArg.start,
+        end: effectiveArg.end,
         type: effectiveType,
       };
-      if (effectiveCallNode) {
-        loc.callStart = effectiveCallNode.start;
-        loc.callEnd = effectiveCallNode.end;
+      if (effectiveCall) {
+        loc.callStart = effectiveCall.start;
+        loc.callEnd = effectiveCall.end;
       }
       addLocation(assetLocations, resolved, loc);
     }
