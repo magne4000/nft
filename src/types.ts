@@ -13,7 +13,9 @@ export type LocationType =
   | 'node-gyp-build'
   | 'module-register'
   | 'glob'
-  | 'nbind';
+  | 'nbind'
+  // any other statically evaluated path expression (`__dirname + '/x'`, ...)
+  | 'expression';
 
 export interface AssetLocation {
   start: number;

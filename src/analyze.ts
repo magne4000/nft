@@ -1527,7 +1527,7 @@ export default async function analyze(
       node.arguments.length >= 1
     )
       return refLoc(node.arguments[0], node, 'new-url');
-    const type = staticLocationType ?? 'path-join';
+    const type = staticLocationType ?? 'expression';
     return staticCallNode
       ? refLoc(node, staticCallNode, type)
       : { start: node.start, end: node.end, type };
