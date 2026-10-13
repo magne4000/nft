@@ -241,10 +241,11 @@ const { fileLocations } = await nodeFileTrace(files, {
 
 ```js
 {
-  // require / import / re-export specifier as written; a file matched by a
-  // wildcard require is keyed as its relative specifier, e.g. './locales/en.js'
+  // require / import / re-export specifier, evaluated when computed; local
+  // file paths (computed, or matched by a wildcard require or import()) are
+  // keyed as relative specifiers, e.g. './locales/en.js'
   depLocations: Map<string, AssetLocation[]>,
-  // dynamic import() / module.register() specifier as written
+  // dynamic import() / module.register() specifier, keyed the same way
   importLocations: Map<string, AssetLocation[]>,
   // asset path relative to `base`, as in `fileList`
   assetLocations: Map<string, AssetLocation[]>,

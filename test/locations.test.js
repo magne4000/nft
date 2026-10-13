@@ -270,6 +270,15 @@ describe('trackLocations', () => {
     expect(locs[0].call).toBeUndefined();
   });
 
+  it('keys a computed local require as a relative specifier', async () => {
+    const code = `require(__dirname + '/../x.js');`;
+    const { depLocations } = await trace('lib/index.js', {
+      'lib/index.js': code,
+      'x.js': '',
+    });
+    expect([...depLocations.keys()]).toEqual(['../x.js']);
+  });
+
   it('records a wildcard require on each matched file', async () => {
     const code = `const lang = process.env.LANG;\nrequire('./locales/' + lang + '.js');`;
     const { depLocations } = await trace('index.js', {

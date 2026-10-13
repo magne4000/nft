@@ -337,13 +337,19 @@ export default async function analyze(
       arr.push(loc);
   }
 
+  // local file paths are keyed like a literal require of them from this module
+  function specifierKey(value: string) {
+    if (!path.isAbsolute(value)) return value;
+    const rel = path.relative(dir, value).replaceAll(path.sep, '/');
+    return rel.startsWith('../') ? rel : './' + rel;
+  }
   function emitDep(value: string, loc: AssetLocation | null) {
     deps.add(value);
-    addLocation('depLocations', value, loc);
+    if (loc) addLocation('depLocations', specifierKey(value), loc);
   }
   function emitImport(value: string, loc: AssetLocation | null) {
     imports.add(value);
-    addLocation('importLocations', value, loc);
+    if (loc) addLocation('importLocations', specifierKey(value), loc);
   }
   function emitAsset(value: string, loc: AssetLocation | null) {
     assets.add(value);
@@ -645,17 +651,7 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => {
-          deps.add(file);
-          if (!loc) return;
-          // keyed like a literal require of the matched file from this module
-          const rel = path.relative(dir, file).replaceAll(path.sep, '/');
-          addLocation(
-            'depLocations',
-            rel.startsWith('../') ? rel : './' + rel,
-            loc,
-          );
-        });
+        .forEach((file) => emitDep(file, loc));
     });
   }
 
