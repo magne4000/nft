@@ -322,19 +322,22 @@ export default async function analyze(
   const importLocations = new Map<string, AssetLocation[]>();
 
   // The single gate for location data: a no-op unless opted in via trackLocations.
+  // The walker can reach one expression more than once (a path.join call, then
+  // its __dirname leaf), so a range already recorded for `key` is skipped.
   function addLocation(
     map: Map<string, AssetLocation[]>,
     key: string,
     loc: AssetLocation | null,
   ) {
     if (!loc || !job.trackLocations) return;
-    let arr = map.get(key);
-    if (!arr) map.set(key, (arr = []));
-    arr.push(loc);
+    const arr = map.get(key);
+    if (!arr) map.set(key, [loc]);
+    else if (!arr.some((l) => l.start === loc.start && l.end === loc.end))
+      arr.push(loc);
   }
 
-  // loc is null when the value has no trackable source position
-  // (glob expansion, static-eval, no AST context).
+  // loc is null when the value has no source position of its own
+  // (package.json lookups, statically evaluated requires).
   function emitDep(value: string, loc: AssetLocation | null) {
     deps.add(value);
     addLocation(depLocations, value, loc);
@@ -374,7 +377,10 @@ export default async function analyze(
   cwd = job.cwd;
   const pkgBase = getPackageBase(id);
 
-  const emitAssetDirectory = (wildcardPath: string, node?: Node) => {
+  const emitAssetDirectory = (
+    wildcardPath: string,
+    loc: AssetLocation | null = null,
+  ) => {
     if (!job.analysis.emitGlobs) return;
     wildcardPath = wildcardPath.replaceAll(path.sep, path.posix.sep);
     const wildcardIndex = wildcardPath.indexOf(WILDCARD);
@@ -402,7 +408,8 @@ export default async function analyze(
         dot: true,
         nodir: true,
       });
-      const loc = specialCaseLoc(node);
+      // every globbed file inherits the location of the expression that
+      // produced the directory
       files
         .filter(
           (name) =>
@@ -597,7 +604,10 @@ export default async function analyze(
   // Express engine opt-out
   let definedExpressEngines = false;
 
-  function emitWildcardRequire(wildcardRequire: string) {
+  function emitWildcardRequire(
+    wildcardRequire: string,
+    loc: AssetLocation | null,
+  ) {
     if (
       !job.analysis.emitGlobs ||
       (!wildcardRequire.startsWith('./') && !wildcardRequire.startsWith('../'))
@@ -643,7 +653,7 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => emitDep(file, null));
+        .forEach((file) => emitDep(file, loc));
     });
   }
 
@@ -695,14 +705,11 @@ export default async function analyze(
 
     if ('value' in computed && typeof computed.value === 'string') {
       if (!computed.wildcards) add(computed.value);
-      else if (computed.wildcards.length >= 1) {
-        addLocation(
-          depLocations,
+      else if (computed.wildcards.length >= 1)
+        emitWildcardRequire(
           computed.value,
           refLoc(expression, callNode, 'glob'),
         );
-        emitWildcardRequire(computed.value);
-      }
     } else {
       if ('ifTrue' in computed && typeof computed.ifTrue === 'string')
         add(computed.ifTrue);
@@ -719,7 +726,8 @@ export default async function analyze(
       ast,
       emitDependency: (dep, node) => emitDep(dep, specialCaseLoc(node)),
       emitAsset: (asset, node) => emitAsset(asset, specialCaseLoc(node)),
-      emitAssetDirectory,
+      emitAssetDirectory: (dir, node) =>
+        emitAssetDirectory(dir, specialCaseLoc(node)),
       job,
     });
   }
@@ -1092,7 +1100,10 @@ export default async function analyze(
                     node.arguments[0].name === '__dirname'
                   ) {
                     // Special case `fs.readdirSync(__dirname)` to emit right away
-                    emitAssetDirectory(dir);
+                    emitAssetDirectory(
+                      dir,
+                      refLoc(node.arguments[0], node, 'fs'),
+                    );
                   } else {
                     await backtrack(parent, this);
                   }
@@ -1416,7 +1427,7 @@ export default async function analyze(
     importLocations,
   };
 
-  async function emitAssetPath(assetPath: string) {
+  async function emitAssetPath(assetPath: string, loc: AssetLocation | null) {
     // verify the asset file / directory exists
     const wildcardIndex = assetPath.indexOf(WILDCARD);
     const dirIndex =
@@ -1456,11 +1467,11 @@ export default async function analyze(
     if (stats.isFile()) {
       // do not emit file assets outside job.base
       if (job.ignoreFn(path.relative(job.base, assetPath))) return;
-      emitAsset(assetPath, null);
+      emitAsset(assetPath, loc);
     } else if (stats.isDirectory()) {
       // do not emit directory assets outside job.base
       if (job.ignoreFn(path.relative(job.base, assetPath))) return;
-      if (validWildcard(assetPath)) emitAssetDirectory(assetPath);
+      if (validWildcard(assetPath)) emitAssetDirectory(assetPath, loc);
     }
   }
 
@@ -1515,38 +1526,26 @@ export default async function analyze(
         : path.resolve(value);
   }
 
-  function unwrapNewUrl(node: Node): { arg: Node; call: Node } | undefined {
+  // Location of the static child expression being emitted as an asset. For
+  // `new URL(arg, import.meta.url)` the range is `arg`, the relative specifier.
+  function staticChildLoc(node: Node): AssetLocation | null {
+    if (!job.trackLocations) return null;
     if (
       node.type === 'NewExpression' &&
       node.callee.type === 'Identifier' &&
       node.callee.name === 'URL' &&
       node.arguments.length >= 1
     )
-      return { arg: node.arguments[0], call: node };
-    return undefined;
+      return refLoc(node.arguments[0], node, 'new-url');
+    const type = staticLocationType ?? 'path-join';
+    return staticCallNode
+      ? refLoc(node, staticCallNode, type)
+      : { start: node.start, end: node.end, type };
   }
 
   async function emitStaticChildAsset() {
     if (!staticChildValue || !staticChildNode) return;
-
-    const argNode = staticChildNode;
-    const callNode = staticCallNode;
-    const locType = staticLocationType;
-
-    function trackAssetLoc(resolved: string) {
-      if (!job.trackLocations) return;
-      const newUrl = unwrapNewUrl(argNode);
-      const arg = newUrl ? newUrl.arg : argNode;
-      const call = newUrl ? newUrl.call : callNode;
-      const type: LocationType = newUrl ? 'new-url' : locType ?? 'path-join';
-      addLocation(
-        assetLocations,
-        resolved,
-        call
-          ? refLoc(arg, call, type)
-          : { start: arg.start, end: arg.end, type },
-      );
-    }
+    const loc = staticChildLoc(staticChildNode);
 
     if (
       'value' in staticChildValue &&
@@ -1554,8 +1553,7 @@ export default async function analyze(
     ) {
       try {
         const resolved = resolveAbsolutePathOrUrl(staticChildValue.value);
-        trackAssetLoc(resolved);
-        await emitAssetPath(resolved);
+        await emitAssetPath(resolved, loc);
       } catch (e) {}
     } else if (
       'ifTrue' in staticChildValue &&
@@ -1571,14 +1569,8 @@ export default async function analyze(
       try {
         resolvedElse = resolveAbsolutePathOrUrl(staticChildValue.else);
       } catch (e) {}
-      if (resolvedThen) {
-        trackAssetLoc(resolvedThen);
-        await emitAssetPath(resolvedThen);
-      }
-      if (resolvedElse) {
-        trackAssetLoc(resolvedElse);
-        await emitAssetPath(resolvedElse);
-      }
+      if (resolvedThen) await emitAssetPath(resolvedThen, loc);
+      if (resolvedElse) await emitAssetPath(resolvedElse, loc);
     } else if (
       staticChildNode.type === 'ArrayExpression' &&
       'value' in staticChildValue &&
@@ -1587,8 +1579,7 @@ export default async function analyze(
       for (const value of staticChildValue.value) {
         try {
           const resolved = resolveAbsolutePathOrUrl(value);
-          trackAssetLoc(resolved);
-          await emitAssetPath(resolved);
+          await emitAssetPath(resolved, loc);
         } catch (e) {}
       }
     }
