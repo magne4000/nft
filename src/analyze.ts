@@ -1572,10 +1572,12 @@ export default async function analyze(
       'value' in staticChildValue &&
       staticChildValue.value instanceof Array
     ) {
-      for (const value of staticChildValue.value) {
+      // static eval maps elements[i] to value[i]
+      const { elements } = staticChildNode;
+      for (const [i, value] of staticChildValue.value.entries()) {
         try {
           const resolved = resolveAbsolutePathOrUrl(value);
-          await emitAssetPath(resolved, loc);
+          await emitAssetPath(resolved, staticChildLoc(elements[i]));
         } catch (e) {}
       }
     }

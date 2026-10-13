@@ -159,6 +159,23 @@ describe('trackLocations', () => {
     ]);
   });
 
+  it('records each element of an array of paths', async () => {
+    const code = `const path = require('path');\nconst files = [path.join(__dirname, 'a.txt'), path.join(__dirname, 'b.txt')];`;
+    const { assetLocations } = await trace('index.js', {
+      'index.js': code,
+      'a.txt': '',
+      'b.txt': '',
+    });
+    for (const file of ['a.txt', 'b.txt'])
+      expect(slices(code, assetLocations, file)).toEqual([
+        {
+          type: 'path-join',
+          arg: `path.join(__dirname, '${file}')`,
+          call: undefined,
+        },
+      ]);
+  });
+
   it('labels other static path expressions as expression', async () => {
     const code = `const p = __dirname + '/a.txt';`;
     const { assetLocations } = await trace('index.js', {
