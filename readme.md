@@ -225,6 +225,48 @@ With `depth: 0`, only the entry point files themselves are included in the trace
 
 Note that the `depth` option cannot be less than 0. Setting a negative value will result in an error.
 
+#### Location Tracking
+
+> Status: Experimental. May change at any time.
+
+Set `trackLocations` to also get where each dependency and asset is referenced in the source, e.g. for tools that rewrite those references:
+
+```js
+const { fileLocations } = await nodeFileTrace(files, {
+  trackLocations: true,
+});
+```
+
+`fileLocations` maps each analyzed file, relative to `base` like `fileList`, to:
+
+```js
+{
+  // require / import / re-export specifier as written; a file matched by a
+  // wildcard require is keyed as its relative specifier, e.g. './locales/en.js'
+  depLocations: Map<string, AssetLocation[]>,
+  // dynamic import() / module.register() specifier as written
+  importLocations: Map<string, AssetLocation[]>,
+  // asset path relative to `base`, as in `fileList`
+  assetLocations: Map<string, AssetLocation[]>,
+}
+```
+
+where each `AssetLocation` is:
+
+```js
+{
+  start: number, // offsets of the path expression in the file source;
+  end: number, // string literals include their quotes
+  callStart?: number, // offsets of the enclosing call, `new URL(...)`
+  callEnd?: number, // or import / export declaration
+  type: 'require' | 'import' | 'dynamic-import' | 'require-resolve' | 'fs' |
+    'path-join' | 'path-resolve' | 'new-url' | 'bindings' | 'node-gyp-build' |
+    'module-register' | 'glob' | 'nbind' | 'expression',
+}
+```
+
+Only emitted files get a location. Files found through a directory or wildcard reference share the location of that expression. Assets emitted by package-specific special cases have no source reference and therefore no location.
+
 #### Reasons
 
 To get the underlying reasons for individual files being included, a `reasons` object is also provided by the output:
