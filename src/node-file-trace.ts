@@ -405,8 +405,16 @@ export class Job {
 
     if (this.trackLocations) {
       const { assetLocations, depLocations, importLocations } = analyzeResult;
+      // asset keys are absolute in the analysis cache, which can be shared
+      // across jobs with different bases; report them relative to base, like
+      // fileList
       this.fileLocations.set(relative(this.base, path), {
-        assetLocations,
+        assetLocations: new Map(
+          [...assetLocations].map(([asset, locs]) => [
+            relative(this.base, asset),
+            locs,
+          ]),
+        ),
         depLocations,
         importLocations,
       });

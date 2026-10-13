@@ -647,7 +647,17 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => emitDep(file, loc));
+        .forEach((file) => {
+          deps.add(file);
+          if (!loc) return;
+          // keyed like a literal require of the matched file from this module
+          const rel = path.relative(dir, file).replaceAll(path.sep, '/');
+          addLocation(
+            depLocations,
+            rel.startsWith('../') ? rel : './' + rel,
+            loc,
+          );
+        });
     });
   }
 
