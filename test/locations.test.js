@@ -49,6 +49,23 @@ describe('trackLocations', () => {
     expect(result.fileLocations).toBeUndefined();
   });
 
+  (process.platform === 'win32' ? it.skip : it)(
+    'keys a symlinked file by its real path, like fileList',
+    async () => {
+      fs.mkdirSync(abs('lib'));
+      fs.writeFileSync(abs('lib/real.js'), `require('a');`);
+      fs.symlinkSync(abs('lib/real.js'), abs('index.js'));
+      const result = await nodeFileTrace([abs('index.js')], {
+        base,
+        depth: 1,
+        trackLocations: true,
+      });
+      const key = path.join('lib', 'real.js');
+      expect(result.fileList.has(key)).toBe(true);
+      expect([...result.fileLocations.keys()]).toEqual([key]);
+    },
+  );
+
   it('records require, module.require and require.resolve', async () => {
     const code = `require('a');\nmodule.require('b');\nrequire.resolve('c');`;
     const { depLocations } = await trace('index.js', { 'index.js': code });
