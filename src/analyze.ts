@@ -1023,7 +1023,7 @@ export default async function analyze(
                   node.arguments[1],
                   false,
                   node,
-                  'require',
+                  'express-view-engine',
                 );
                 return this.skip();
               }
@@ -1041,7 +1041,7 @@ export default async function analyze(
                 node.arguments[0].type === 'ObjectExpression'
               ) {
                 await processPinoTransportObject(node.arguments[0], (arg) =>
-                  processRequireArg(arg, false, node, 'require'),
+                  processRequireArg(arg, false, node, 'pino-transport'),
                 );
                 return this.skip();
               }
@@ -1071,7 +1071,12 @@ export default async function analyze(
                         await processPinoTransportObject(
                           loggerProp.value,
                           (arg) =>
-                            processRequireArg(arg, false, node, 'require'),
+                            processRequireArg(
+                              arg,
+                              false,
+                              node,
+                              'pino-transport',
+                            ),
                         );
                       }
                     }
@@ -1207,7 +1212,7 @@ export default async function analyze(
               prop.value.type === 'ObjectExpression'
             ) {
               await processPinoTransportObject(prop.value, (arg) =>
-                processRequireArg(arg, false, node, 'require'),
+                processRequireArg(arg, false, node, 'pino-transport'),
               );
             }
           }

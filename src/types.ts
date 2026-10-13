@@ -12,6 +12,8 @@ export type LocationType =
   | 'bindings'
   | 'node-gyp-build'
   | 'module-register'
+  | 'express-view-engine'
+  | 'pino-transport'
   | 'glob'
   | 'nbind'
   | 'expression';

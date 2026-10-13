@@ -241,9 +241,10 @@ const { fileLocations } = await nodeFileTrace(files, {
 
 ```js
 {
-  // require / import / re-export specifier, evaluated when computed; local
-  // file paths (computed, or matched by a wildcard require or import()) are
-  // keyed as relative specifiers, e.g. './locales/en.js'
+  // specifier of a require / import / re-export, express view engine, pino
+  // transport target or nbind binding, evaluated when computed; local file
+  // paths (computed, or matched by a wildcard require or import()) are keyed
+  // as relative specifiers, e.g. './locales/en.js'
   depLocations: Map<string, AssetLocation[]>,
   // dynamic import() / module.register() specifier, keyed the same way
   importLocations: Map<string, AssetLocation[]>,
@@ -262,7 +263,8 @@ where each `AssetLocation` is:
   callEnd?: number, // or import / export declaration
   type: 'require' | 'import' | 'dynamic-import' | 'require-resolve' | 'fs' |
     'path-join' | 'path-resolve' | 'new-url' | 'bindings' | 'node-gyp-build' |
-    'module-register' | 'glob' | 'nbind' | 'expression',
+    'module-register' | 'express-view-engine' | 'pino-transport' | 'glob' |
+    'nbind' | 'expression',
 }
 ```
 

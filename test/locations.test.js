@@ -113,6 +113,25 @@ describe('trackLocations', () => {
     ]);
   });
 
+  it('records pino transport targets and express view engines', async () => {
+    const code = `const pino = require('pino');\npino.transport({ target: 'pino-pretty' });\nconst express = require('express');\nconst app = express();\napp.set('view engine', 'pug');`;
+    const { depLocations } = await trace('index.js', { 'index.js': code });
+    expect(slices(code, depLocations, 'pino-pretty')).toEqual([
+      {
+        type: 'pino-transport',
+        arg: `'pino-pretty'`,
+        call: `pino.transport({ target: 'pino-pretty' })`,
+      },
+    ]);
+    expect(slices(code, depLocations, 'pug')).toEqual([
+      {
+        type: 'express-view-engine',
+        arg: `'pug'`,
+        call: `app.set('view engine', 'pug')`,
+      },
+    ]);
+  });
+
   it('keeps offsets intact for files starting with a shebang', async () => {
     const code = `#!/usr/bin/env node\nrequire('a');`;
     const { depLocations } = await trace('index.js', { 'index.js': code });
