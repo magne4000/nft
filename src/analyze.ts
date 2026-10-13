@@ -27,7 +27,7 @@ import nodeGypBuild from 'node-gyp-build';
 import mapboxPregyp from '@mapbox/node-pre-gyp';
 import { Job } from './node-file-trace';
 import { fileURLToPath, pathToFileURL, URL } from 'url';
-import { AssetLocation, LocationType } from './types';
+import { AssetLocation, FileLocationResult, LocationType } from './types';
 
 // Note: these should be deprecated over time as they ship in Acorn core
 const acorn = Parser.extend(
@@ -266,11 +266,8 @@ export interface AnalyzeResult {
   deps: Set<string>;
   imports: Set<string>;
   isESM: boolean;
-  // whether the location maps were populated (job.trackLocations at analysis)
-  locationsTracked: boolean;
-  assetLocations: Map<string, AssetLocation[]>;
-  depLocations: Map<string, AssetLocation[]>;
-  importLocations: Map<string, AssetLocation[]>;
+  // only set when analyzed with job.trackLocations; asset keys are absolute
+  locations?: FileLocationResult;
 }
 
 // Helper: process pino transport config object
@@ -319,19 +316,25 @@ export default async function analyze(
   const assets = new Set<string>();
   const deps = new Set<string>();
   const imports = new Set<string>();
-  const assetLocations = new Map<string, AssetLocation[]>();
-  const depLocations = new Map<string, AssetLocation[]>();
-  const importLocations = new Map<string, AssetLocation[]>();
+  // only allocated when opted in via trackLocations: every location helper
+  // below is a no-op without it
+  const locations: FileLocationResult | undefined = job.trackLocations
+    ? {
+        assetLocations: new Map(),
+        depLocations: new Map(),
+        importLocations: new Map(),
+      }
+    : undefined;
 
-  // The single gate for location data: a no-op unless opted in via trackLocations.
   // The walker can reach one expression more than once (a path.join call, then
   // its __dirname leaf), so a range already recorded for `key` is skipped.
   function addLocation(
-    map: Map<string, AssetLocation[]>,
+    kind: keyof FileLocationResult,
     key: string,
     loc: AssetLocation | null,
   ) {
-    if (!loc || !job.trackLocations) return;
+    if (!locations || !loc) return;
+    const map = locations[kind];
     const arr = map.get(key);
     if (!arr) map.set(key, [loc]);
     else if (!arr.some((l) => l.start === loc.start && l.end === loc.end))
@@ -342,19 +345,24 @@ export default async function analyze(
   // (special cases, package.json lookups, statically evaluated requires).
   function emitDep(value: string, loc: AssetLocation | null) {
     deps.add(value);
-    addLocation(depLocations, value, loc);
+    addLocation('depLocations', value, loc);
   }
   function emitImport(value: string, loc: AssetLocation | null) {
     imports.add(value);
-    addLocation(importLocations, value, loc);
+    addLocation('importLocations', value, loc);
   }
   function emitAsset(value: string, loc: AssetLocation | null) {
     assets.add(value);
-    addLocation(assetLocations, value, loc);
+    addLocation('assetLocations', value, loc);
   }
 
   // A reference whose path expression (`arg`) sits inside an enclosing call.
-  function refLoc(arg: Node, call: Node, type: LocationType): AssetLocation {
+  function refLoc(
+    arg: Node,
+    call: Node,
+    type: LocationType,
+  ): AssetLocation | null {
+    if (!locations) return null;
     return {
       start: arg.start,
       end: arg.end,
@@ -451,10 +459,7 @@ export default async function analyze(
         deps,
         imports,
         isESM: false,
-        locationsTracked: job.trackLocations,
-        assetLocations,
-        depLocations,
-        importLocations,
+        locations,
       };
     }
   }
@@ -653,7 +658,7 @@ export default async function analyze(
           // keyed like a literal require of the matched file from this module
           const rel = path.relative(dir, file).replaceAll(path.sep, '/');
           addLocation(
-            depLocations,
+            'depLocations',
             rel.startsWith('../') ? rel : './' + rel,
             loc,
           );
@@ -1425,10 +1430,7 @@ export default async function analyze(
     deps,
     imports,
     isESM,
-    locationsTracked: job.trackLocations,
-    assetLocations,
-    depLocations,
-    importLocations,
+    locations,
   };
 
   async function emitAssetPath(assetPath: string, loc: AssetLocation | null) {
@@ -1533,7 +1535,7 @@ export default async function analyze(
   // Location of the static child expression being emitted as an asset. For
   // `new URL(arg, import.meta.url)` the range is `arg`, the relative specifier.
   function staticChildLoc(node: Node): AssetLocation | null {
-    if (!job.trackLocations) return null;
+    if (!locations) return null;
     if (
       node.type === 'NewExpression' &&
       node.callee.type === 'Identifier' &&

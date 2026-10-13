@@ -384,13 +384,10 @@ export class Job {
 
     let analyzeResult: AnalyzeResult;
 
-    // an entry analyzed without location tracking has empty location maps and
-    // cannot serve a tracking run
+    // an entry analyzed without trackLocations has no locations and cannot
+    // serve a tracking run
     const cachedAnalysis = this.analysisCache.get(realPath);
-    if (
-      cachedAnalysis &&
-      (cachedAnalysis.locationsTracked || !this.trackLocations)
-    ) {
+    if (cachedAnalysis && (cachedAnalysis.locations || !this.trackLocations)) {
       analyzeResult = cachedAnalysis;
     } else {
       const source = await this.readFile(realPath);
@@ -403,20 +400,20 @@ export class Job {
       this.analysisCache.set(realPath, analyzeResult);
     }
 
-    if (this.trackLocations) {
-      const { assetLocations, depLocations, importLocations } = analyzeResult;
+    const { locations } = analyzeResult;
+    if (this.trackLocations && locations) {
       // asset keys are absolute in the analysis cache, which can be shared
       // across jobs with different bases; report them relative to base, like
       // fileList
       this.fileLocations.set(relative(this.base, path), {
         assetLocations: new Map(
-          [...assetLocations].map(([asset, locs]) => [
+          [...locations.assetLocations].map(([asset, locs]) => [
             relative(this.base, asset),
             locs,
           ]),
         ),
-        depLocations,
-        importLocations,
+        depLocations: locations.depLocations,
+        importLocations: locations.importLocations,
       });
     }
 
