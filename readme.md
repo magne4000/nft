@@ -266,7 +266,7 @@ where each `AssetLocation` is:
 }
 ```
 
-Assets only get a location once emitted, while dependencies and imports get one even when they cannot be resolved. Assets emitted by package-specific special cases have no source reference and therefore no location.
+Assets only get a location once emitted, while dependencies and imports get one even when they cannot be resolved. Assets emitted by package-specific special cases have no source reference and therefore no location, and neither do references of a module to itself (`__filename`, `import.meta.url`).
 
 A location can be shared by several entries: files found through a directory, wildcard or conditional reference all share the location of that expression, and a range can be recorded both as a dependency and as an asset, e.g. `require(path.join(__dirname, 'x.js'))`. When rewriting sources, dedupe locations by `start` / `end` first.
 

@@ -216,6 +216,17 @@ describe('trackLocations', () => {
       ]);
   });
 
+  it('does not record a module referencing itself as an asset', async () => {
+    const cjs = await trace('index.js', {
+      'index.js': `console.log(__filename);`,
+    });
+    expect([...cjs.assetLocations.keys()]).toEqual([]);
+    const esm = await trace('index.mjs', {
+      'index.mjs': `import { createRequire } from 'module';\nconst req = createRequire(import.meta.url);`,
+    });
+    expect([...esm.assetLocations.keys()]).toEqual([]);
+  });
+
   it('does not record references to files that are not emitted', async () => {
     const code = `const fs = require('fs');\nfs.readFileSync(__dirname + '/missing.txt');`;
     const { assetLocations } = await trace('index.js', { 'index.js': code });

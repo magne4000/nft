@@ -353,7 +353,8 @@ export default async function analyze(
   }
   function emitAsset(value: string, loc: AssetLocation | null) {
     assets.add(value);
-    addLocation('assetLocations', value, loc);
+    // __filename / import.meta.url point at the module itself, not an asset
+    if (value !== id) addLocation('assetLocations', value, loc);
   }
 
   function refLoc(
