@@ -1,396 +1,303 @@
-/**
- * Location tracking tests for nodeFileTrace({ trackLocations: true }).
- *
- * Each test writes a minimal code string, traces it with depth:1, and
- * verifies that source.slice(loc.start, loc.end) equals the path expression
- * and source.slice(loc.callStart, loc.callEnd) equals the outer call expression.
- */
-
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { nodeFileTrace } = require('../out/node-file-trace');
 
-const FIXTURE_FILE = path.resolve(__dirname, '__loc_fixture__.js');
-const BASE = path.dirname(FIXTURE_FILE);
-const REL = path.basename(FIXTURE_FILE); // 'relative' key in fileLocations
+let base;
+beforeEach(() => {
+  base = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'nft-locations-')),
+  );
+});
+afterEach(() => fs.rmSync(base, { recursive: true, force: true }));
 
-/**
- * Trace a code string as if it were FIXTURE_FILE.
- * Returns the FileLocationResult for that file.
- */
-async function traceCode(code, extraOpts = {}) {
-  const result = await nodeFileTrace([FIXTURE_FILE], {
-    base: BASE,
+// Writes `files` (path relative to base → content) and traces `entry` with
+// location tracking. Returns the location maps recorded for `entry`.
+async function trace(entry, files, opts = {}) {
+  for (const [file, content] of Object.entries(files)) {
+    const abs = path.join(base, file);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+  const result = await nodeFileTrace([path.join(base, entry)], {
+    base,
     depth: 1,
     trackLocations: true,
-    readFile: async (p) => (p === FIXTURE_FILE ? code : null),
-    stat: async (p) => {
-      if (p === FIXTURE_FILE)
-        return {
-          isFile: () => true,
-          isDirectory: () => false,
-          dev: 0,
-          ino: 0,
-          mode: 0o644,
-          nlink: 1,
-          uid: 0,
-          gid: 0,
-          rdev: 0,
-          size: code.length,
-          blksize: 4096,
-          blocks: 8,
-          atimeMs: 0,
-          mtimeMs: 0,
-          ctimeMs: 0,
-          birthtimeMs: 0,
-          atime: new Date(0),
-          mtime: new Date(0),
-          ctime: new Date(0),
-          birthtime: new Date(0),
-        };
-      // Return a minimal stat for anything else so asset checks pass
-      return null;
-    },
-    ...extraOpts,
+    ...opts,
   });
-  return { locs: result.fileLocations?.get(REL), result };
+  return result.fileLocations.get(entry);
 }
 
-/** Assert a location's start/end match a substring of source. */
-function expectSlice(source, loc, expectedArg, expectedCall) {
-  expect(source.slice(loc.start, loc.end)).toBe(expectedArg);
-  if (expectedCall !== undefined) {
-    expect(source.slice(loc.callStart, loc.callEnd)).toBe(expectedCall);
-  }
+// Source slices of every location recorded under `key`.
+function slices(code, map, key) {
+  return (map.get(key) || []).map((l) => ({
+    type: l.type,
+    arg: code.slice(l.start, l.end),
+    call:
+      l.callStart === undefined
+        ? undefined
+        : code.slice(l.callStart, l.callEnd),
+  }));
 }
 
-// ---------------------------------------------------------------------------
-// 1. require()
-// ---------------------------------------------------------------------------
+const abs = (rel) => path.join(base, rel);
 
-describe('require() location tracking', () => {
-  it('tracks static require with string literal', async () => {
-    const code = `const x = require('some-module');`;
-    const { locs } = await traceCode(code);
-    expect(locs).toBeDefined();
-    const arr = locs.depLocations.get('some-module');
-    expect(arr).toBeDefined();
-    expect(arr).toHaveLength(1);
-    const loc = arr[0];
-    expect(loc.type).toBe('require');
-    expectSlice(code, loc, `'some-module'`, `require('some-module')`);
+describe('trackLocations', () => {
+  it('is opt-in', async () => {
+    fs.writeFileSync(abs('index.js'), `require('a');`);
+    const result = await nodeFileTrace([abs('index.js')], { base, depth: 1 });
+    expect(result.fileLocations).toBeUndefined();
   });
 
-  it('tracks require with double-quoted string', async () => {
-    const code = `const x = require("lodash");`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('lodash');
-    expect(arr).toHaveLength(1);
-    expectSlice(code, arr[0], `"lodash"`, `require("lodash")`);
+  it('records require, module.require and require.resolve', async () => {
+    const code = `require('a');\nmodule.require('b');\nrequire.resolve('c');`;
+    const { depLocations } = await trace('index.js', { 'index.js': code });
+    expect(slices(code, depLocations, 'a')).toEqual([
+      { type: 'require', arg: `'a'`, call: `require('a')` },
+    ]);
+    expect(slices(code, depLocations, 'b')).toEqual([
+      { type: 'require', arg: `'b'`, call: `module.require('b')` },
+    ]);
+    expect(slices(code, depLocations, 'c')).toEqual([
+      { type: 'require-resolve', arg: `'c'`, call: `require.resolve('c')` },
+    ]);
   });
 
-  it('tracks multiple requires in same file', async () => {
-    const code = `const a = require('mod-a');\nconst b = require('mod-b');`;
-    const { locs } = await traceCode(code);
-    expect(locs.depLocations.get('mod-a')).toHaveLength(1);
-    expect(locs.depLocations.get('mod-b')).toHaveLength(1);
+  it('records each distinct reference to the same specifier', async () => {
+    const code = `require('a');\nrequire("a");`;
+    const { depLocations } = await trace('index.js', { 'index.js': code });
+    expect(slices(code, depLocations, 'a').map((s) => s.arg)).toEqual([
+      `'a'`,
+      `"a"`,
+    ]);
   });
 
-  it('tracks same module required twice', async () => {
-    const code = `const a = require('mod');\nconst b = require('mod');`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('mod');
-    expect(arr).toHaveLength(2);
-    expect(arr[0].type).toBe('require');
-    expect(arr[1].type).toBe('require');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 2. module.require()
-// ---------------------------------------------------------------------------
-
-describe('module.require() location tracking', () => {
-  it('tracks module.require()', async () => {
-    const code = `const x = module.require('some-module');`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('some-module');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('require');
-    expectSlice(code, arr[0], `'some-module'`, `module.require('some-module')`);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 3. require.resolve()
-// ---------------------------------------------------------------------------
-
-describe('require.resolve() location tracking', () => {
-  it('tracks require.resolve()', async () => {
-    const code = `const p = require.resolve('some-module');`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('some-module');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('require-resolve');
-    expectSlice(
-      code,
-      arr[0],
-      `'some-module'`,
-      `require.resolve('some-module')`,
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 4. ESM import declarations
-// ---------------------------------------------------------------------------
-
-describe('ESM import location tracking', () => {
-  it('tracks static import declaration', async () => {
-    const code = `import foo from 'some-module';`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('some-module');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('import');
-    expectSlice(
-      code,
-      arr[0],
-      `'some-module'`,
-      `import foo from 'some-module';`,
-    );
+  it('records ESM imports, re-exports and dynamic imports', async () => {
+    const code = `import a from 'a';\nexport * from 'b';\nimport('c');`;
+    const { depLocations, importLocations } = await trace('index.mjs', {
+      'index.mjs': code,
+    });
+    expect(slices(code, depLocations, 'a')).toEqual([
+      { type: 'import', arg: `'a'`, call: `import a from 'a';` },
+    ]);
+    expect(slices(code, depLocations, 'b')).toEqual([
+      { type: 'import', arg: `'b'`, call: `export * from 'b';` },
+    ]);
+    expect(slices(code, importLocations, 'c')).toEqual([
+      { type: 'dynamic-import', arg: `'c'`, call: `import('c')` },
+    ]);
   });
 
-  it('tracks named import', async () => {
-    const code = `import { a, b } from 'some-module';`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('some-module');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('import');
+  it('records module.register()', async () => {
+    const code = `import { register } from 'node:module';\nregister('loader');`;
+    const { importLocations } = await trace('index.mjs', { 'index.mjs': code });
+    expect(slices(code, importLocations, 'loader')).toEqual([
+      { type: 'module-register', arg: `'loader'`, call: `register('loader')` },
+    ]);
   });
 
-  it('tracks side-effect import', async () => {
-    const code = `import 'some-module';`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('some-module');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('import');
-    expectSlice(code, arr[0], `'some-module'`, `import 'some-module';`);
+  it('keeps offsets intact for files starting with a shebang', async () => {
+    const code = `#!/usr/bin/env node\nrequire('a');`;
+    const { depLocations } = await trace('index.js', { 'index.js': code });
+    expect(slices(code, depLocations, 'a')).toEqual([
+      { type: 'require', arg: `'a'`, call: `require('a')` },
+    ]);
   });
 
-  it('tracks re-export from', async () => {
-    const code = `export { foo } from 'some-module';`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('some-module');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('import');
-    expectSlice(
-      code,
-      arr[0],
-      `'some-module'`,
-      `export { foo } from 'some-module';`,
-    );
+  it('records an fs call argument once', async () => {
+    const code = `const fs = require('fs');\nconst path = require('path');\nfs.readFileSync(path.join(__dirname, 'data.json'));`;
+    const { assetLocations } = await trace('index.js', {
+      'index.js': code,
+      'data.json': '{}',
+    });
+    expect(slices(code, assetLocations, 'data.json')).toEqual([
+      {
+        type: 'fs',
+        arg: `path.join(__dirname, 'data.json')`,
+        call: `fs.readFileSync(path.join(__dirname, 'data.json'))`,
+      },
+    ]);
   });
 
-  it('tracks export * from', async () => {
-    const code = `export * from 'some-module';`;
-    const { locs } = await traceCode(code);
-    const arr = locs.depLocations.get('some-module');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('import');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. dynamic import()
-// ---------------------------------------------------------------------------
-
-describe('dynamic import() location tracking', () => {
-  it('tracks dynamic import with string literal', async () => {
-    const code = `const m = import('some-module');`;
-    const { locs } = await traceCode(code);
-    const arr = locs.importLocations.get('some-module');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('dynamic-import');
-    expectSlice(code, arr[0], `'some-module'`, `import('some-module')`);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 6. fs.* location tracking
-// ---------------------------------------------------------------------------
-
-describe('fs.* location tracking', () => {
-  it('tracks fs.readFileSync with __dirname', async () => {
-    const code = [
-      `const fs = require('fs');`,
-      `const path = require('path');`,
-      `fs.readFileSync(path.join(__dirname, 'config.json'));`,
-    ].join('\n');
-    const { locs } = await traceCode(code);
-    // The resolved asset key is the absolute path
-    const entries = [...locs.assetLocations.entries()];
-    const entry = entries.find(([k]) => k.endsWith('config.json'));
-    expect(entry).toBeDefined();
-    const [key, arr] = entry;
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('fs');
-    // The arg is the path.join(...) expression
-    expect(code.slice(arr[0].start, arr[0].end)).toBe(
-      `path.join(__dirname, 'config.json')`,
-    );
-    // The call is the fs.readFileSync(...) call
-    expect(code.slice(arr[0].callStart, arr[0].callEnd)).toBe(
-      `fs.readFileSync(path.join(__dirname, 'config.json'))`,
-    );
+  it('records path.join and path.resolve expressions once', async () => {
+    const code = `const path = require('path');\nconst a = path.join(__dirname, 'a.txt');\nconst b = path.resolve(__dirname, 'b.txt');`;
+    const { assetLocations } = await trace('index.js', {
+      'index.js': code,
+      'a.txt': '',
+      'b.txt': '',
+    });
+    expect(slices(code, assetLocations, 'a.txt')).toEqual([
+      {
+        type: 'path-join',
+        arg: `path.join(__dirname, 'a.txt')`,
+        call: undefined,
+      },
+    ]);
+    expect(slices(code, assetLocations, 'b.txt')).toEqual([
+      {
+        type: 'path-resolve',
+        arg: `path.resolve(__dirname, 'b.txt')`,
+        call: undefined,
+      },
+    ]);
   });
 
-  it('tracks fs.readFileSync with string literal', async () => {
-    const code = [
-      `const fs = require('fs');`,
-      `fs.readFileSync('/absolute/path/to/file.txt');`,
-    ].join('\n');
-    const { locs } = await traceCode(code);
-    const entry = [...locs.assetLocations.entries()].find(([k]) =>
-      k.endsWith('file.txt'),
-    );
-    expect(entry).toBeDefined();
-    const [, arr] = entry;
-    expect(arr[0].type).toBe('fs');
-    expect(code.slice(arr[0].start, arr[0].end)).toBe(
-      `'/absolute/path/to/file.txt'`,
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 7. path.join / path.resolve with __dirname as asset
-// ---------------------------------------------------------------------------
-
-describe('path.join/__dirname asset location tracking', () => {
-  it('tracks path.join(__dirname, ...) as an asset reference', async () => {
-    const code = [
-      `const path = require('path');`,
-      `const p = path.join(__dirname, 'data', 'file.json');`,
-    ].join('\n');
-    const { locs } = await traceCode(code);
-    const entry = [...locs.assetLocations.entries()].find(([k]) =>
-      k.endsWith('file.json'),
-    );
-    expect(entry).toBeDefined();
-    const [, arr] = entry;
-    expect(arr[0].type).toBe('path-join');
-    expect(code.slice(arr[0].start, arr[0].end)).toBe(
-      `path.join(__dirname, 'data', 'file.json')`,
-    );
+  it('labels other static path expressions as expression', async () => {
+    const code = `const p = __dirname + '/a.txt';`;
+    const { assetLocations } = await trace('index.js', {
+      'index.js': code,
+      'a.txt': '',
+    });
+    expect(slices(code, assetLocations, 'a.txt')).toEqual([
+      { type: 'expression', arg: `__dirname + '/a.txt'`, call: undefined },
+    ]);
   });
 
-  it('tracks path.resolve(__dirname, ...) as an asset reference', async () => {
-    const code = [
-      `const path = require('path');`,
-      `const p = path.resolve(__dirname, 'data', 'file.json');`,
-    ].join('\n');
-    const { locs } = await traceCode(code);
-    const entry = [...locs.assetLocations.entries()].find(([k]) =>
-      k.endsWith('file.json'),
-    );
-    expect(entry).toBeDefined();
-    const [, arr] = entry;
-    expect(arr[0].type).toBe('path-resolve');
+  it('records the specifier of new URL(..., import.meta.url)', async () => {
+    const code = `const u = new URL('./a.wasm', import.meta.url);`;
+    const { assetLocations } = await trace('index.mjs', {
+      'index.mjs': code,
+      'a.wasm': '',
+    });
+    expect(slices(code, assetLocations, 'a.wasm')).toEqual([
+      {
+        type: 'new-url',
+        arg: `'./a.wasm'`,
+        call: `new URL('./a.wasm', import.meta.url)`,
+      },
+    ]);
   });
-});
 
-// ---------------------------------------------------------------------------
-// 8. new URL() with import.meta.url
-// ---------------------------------------------------------------------------
-
-describe('new URL() location tracking', () => {
-  it('tracks new URL() with import.meta.url', async () => {
-    const code = `const u = new URL('./asset.wasm', import.meta.url);`;
-    const { locs } = await traceCode(code);
-    const entry = [...locs.assetLocations.entries()].find(([k]) =>
-      k.endsWith('asset.wasm'),
-    );
-    expect(entry).toBeDefined();
-    const [, arr] = entry;
-    expect(arr[0].type).toBe('new-url');
-    // The arg is the './asset.wasm' string
-    expect(code.slice(arr[0].start, arr[0].end)).toBe(`'./asset.wasm'`);
-    // The call is the new URL(...) expression
-    expect(code.slice(arr[0].callStart, arr[0].callEnd)).toBe(
-      `new URL('./asset.wasm', import.meta.url)`,
-    );
+  it('records both branches of a conditional path', async () => {
+    const code = `const fs = require('fs');\nfs.readFileSync(process.env.X ? __dirname + '/a.txt' : __dirname + '/b.txt');`;
+    const { assetLocations } = await trace('index.js', {
+      'index.js': code,
+      'a.txt': '',
+      'b.txt': '',
+    });
+    const arg = `process.env.X ? __dirname + '/a.txt' : __dirname + '/b.txt'`;
+    for (const file of ['a.txt', 'b.txt'])
+      expect(slices(code, assetLocations, file)).toEqual([
+        { type: 'fs', arg, call: `fs.readFileSync(${arg})` },
+      ]);
   });
-});
 
-// ---------------------------------------------------------------------------
-// 9. module.register() / module.createRequire()
-// ---------------------------------------------------------------------------
-
-describe('module.register() location tracking', () => {
-  it('tracks module.register() with bare specifier', async () => {
-    const code = `import { register } from 'node:module';\nregister('some-loader');`;
-    const { locs } = await traceCode(code);
-    const arr = locs.importLocations.get('some-loader');
-    expect(arr).toHaveLength(1);
-    expect(arr[0].type).toBe('module-register');
+  it('does not record references to files that are not emitted', async () => {
+    const code = `const fs = require('fs');\nfs.readFileSync(__dirname + '/missing.txt');`;
+    const { assetLocations } = await trace('index.js', { 'index.js': code });
+    expect([...assetLocations.keys()]).toEqual([]);
   });
-});
 
-// ---------------------------------------------------------------------------
-// 10. Special-case package emissions are anchored at the package's require()
-// ---------------------------------------------------------------------------
+  it('records a referenced directory on each emitted file', async () => {
+    const code = `const fs = require('fs');\nfs.readdirSync(__dirname + '/dir');`;
+    const { assetLocations } = await trace('index.js', {
+      'index.js': code,
+      'dir/a.txt': '',
+      'dir/b.txt': '',
+    });
+    const expected = [
+      {
+        type: 'fs',
+        arg: `__dirname + '/dir'`,
+        call: `fs.readdirSync(__dirname + '/dir')`,
+      },
+    ];
+    const a = path.join('dir', 'a.txt');
+    const b = path.join('dir', 'b.txt');
+    expect(slices(code, assetLocations, a)).toEqual(expected);
+    expect(slices(code, assetLocations, b)).toEqual(expected);
+    expect([...assetLocations.keys()].sort()).toEqual([a, b]);
+  });
 
-describe('special-case asset location tracking', () => {
-  it('anchors shiki language/theme assets at the entry require()', async () => {
-    const fs = require('fs');
+  it('records fs.readdirSync(__dirname) on each emitted file', async () => {
+    const code = `require('fs').readdirSync(__dirname);`;
+    const { assetLocations } = await trace('lib/index.js', {
+      'lib/index.js': code,
+      'lib/a.txt': '',
+    });
+    expect(slices(code, assetLocations, path.join('lib', 'a.txt'))).toEqual([
+      {
+        type: 'fs',
+        arg: '__dirname',
+        call: `require('fs').readdirSync(__dirname)`,
+      },
+    ]);
+  });
+
+  it('records a wildcard require on each matched file', async () => {
+    const code = `const lang = process.env.LANG;\nrequire('./locales/' + lang + '.js');`;
+    const { depLocations } = await trace('index.js', {
+      'index.js': code,
+      'locales/en.js': '',
+      'locales/fr.js': '',
+    });
+    const expected = [
+      {
+        type: 'glob',
+        arg: `'./locales/' + lang + '.js'`,
+        call: `require('./locales/' + lang + '.js')`,
+      },
+    ];
+    expect(slices(code, depLocations, './locales/en.js')).toEqual(expected);
+    expect(slices(code, depLocations, './locales/fr.js')).toEqual(expected);
+    expect([...depLocations.keys()].sort()).toEqual([
+      './locales/en.js',
+      './locales/fr.js',
+    ]);
+  });
+
+  it('records bindings() and node-gyp-build() arguments', async () => {
+    const bindingsCode = `require('bindings')('addon');`;
+    const gypCode = `require('node-gyp-build')(__dirname);`;
+    const files = {
+      'node_modules/a/index.js': bindingsCode,
+      'node_modules/a/build/Release/addon.node': '',
+      'node_modules/b/index.js': gypCode,
+      'node_modules/b/build/Release/addon.node': '',
+    };
+    const a = await trace('node_modules/a/index.js', files);
+    expect(
+      slices(
+        bindingsCode,
+        a.assetLocations,
+        path.join('node_modules', 'a', 'build', 'Release', 'addon.node'),
+      ),
+    ).toEqual([
+      { type: 'bindings', arg: `'addon'`, call: bindingsCode.slice(0, -1) },
+    ]);
+    const b = await trace('node_modules/b/index.js', {});
+    expect(
+      slices(
+        gypCode,
+        b.assetLocations,
+        path.join('node_modules', 'b', 'build', 'Release', 'addon.node'),
+      ),
+    ).toEqual([
+      { type: 'node-gyp-build', arg: '__dirname', call: gypCode.slice(0, -1) },
+    ]);
+  });
+
+  it('records no location for special-case package assets', async () => {
     const entry = require.resolve('shiki');
-    const source = fs.readFileSync(entry, 'utf8');
-    const rel = path.basename(entry); // 'index.js'
-
-    const { fileLocations } = await nodeFileTrace([entry], {
+    const root = path.resolve(__dirname, '..');
+    const { fileList, fileLocations } = await nodeFileTrace([entry], {
+      base: root,
       trackLocations: true,
     });
-
-    const entryKey = [...fileLocations.keys()].find((k) => k.endsWith(rel));
-    const specialCaseLocs = [];
-    for (const arr of fileLocations.get(entryKey).assetLocations.values()) {
-      for (const loc of arr)
-        if (loc.type === 'special-case') specialCaseLocs.push(loc);
-    }
-
-    expect(specialCaseLocs.length).toBeGreaterThan(0);
-    for (const loc of specialCaseLocs) {
-      // anchored at the package's require(), not a direct asset reference
-      expect(loc.start).toBeLessThan(loc.end);
-      expect(source.slice(loc.start, loc.end)).toMatch(/^require\(/);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 11. Verifies trackLocations: false produces no fileLocations
-// ---------------------------------------------------------------------------
-
-describe('trackLocations option', () => {
-  it('does not produce fileLocations when trackLocations is false', async () => {
-    const code = `const x = require('some-module');`;
-    const result = await nodeFileTrace([FIXTURE_FILE], {
-      base: BASE,
-      depth: 1,
-      trackLocations: false,
-      readFile: async (p) => (p === FIXTURE_FILE ? code : null),
-      stat: async () => null,
-    });
-    expect(result.fileLocations).toBeUndefined();
+    const languages = [...fileList].filter((f) =>
+      f.includes(`shiki${path.sep}languages${path.sep}`),
+    );
+    expect(languages.length).toBeGreaterThan(0);
+    const { assetLocations } = fileLocations.get(path.relative(root, entry));
+    for (const file of languages) expect(assetLocations.has(file)).toBe(false);
   });
 
-  it('does not produce fileLocations when trackLocations is omitted', async () => {
-    const code = `const x = require('some-module');`;
-    const result = await nodeFileTrace([FIXTURE_FILE], {
-      base: BASE,
-      depth: 1,
-      readFile: async (p) => (p === FIXTURE_FILE ? code : null),
-      stat: async () => null,
-    });
-    expect(result.fileLocations).toBeUndefined();
+  it('re-analyzes files cached by a run without trackLocations', async () => {
+    const code = `require('a');`;
+    fs.writeFileSync(abs('index.js'), code);
+    const cache = {};
+    await nodeFileTrace([abs('index.js')], { base, depth: 1, cache });
+    const { depLocations } = await trace('index.js', {}, { cache });
+    expect(slices(code, depLocations, 'a')).toHaveLength(1);
   });
 });
