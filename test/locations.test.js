@@ -417,6 +417,18 @@ describe('trackLocations', () => {
     ]);
   });
 
+  it('drops asset locations ignored by a job sharing the cache', async () => {
+    const code = `require('fs').readFileSync(__dirname + '/a.txt');`;
+    const files = { 'index.js': code, 'a.txt': '' };
+    const cache = {};
+    await trace('index.js', files, { cache });
+    const { assetLocations } = await trace('index.js', files, {
+      cache,
+      ignore: ['a.txt'],
+    });
+    expect([...assetLocations.keys()]).toEqual([]);
+  });
+
   it('re-analyzes files cached by a run without trackLocations', async () => {
     const code = `require('a');`;
     fs.writeFileSync(abs('index.js'), code);

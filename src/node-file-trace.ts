@@ -18,17 +18,22 @@ function inPath(path: string, parent: string) {
   return path.startsWith(pathWithSep) && path !== pathWithSep;
 }
 
-// fresh copies keep consumer edits out of the shared analysis cache
+// fresh copies keep consumer edits out of the shared analysis cache;
+// entries whose toKey returns undefined are left out
 function copyLocations(
   locations: Map<string, ReferenceLocation[]>,
-  toKey: (key: string) => string = (key) => key,
+  toKey: (key: string) => string | undefined = (key) => key,
 ) {
-  return new Map(
-    [...locations].map(([key, locs]) => [
-      toKey(key),
-      locs.map((loc) => ({ ...loc })),
-    ]),
-  );
+  const copy = new Map<string, ReferenceLocation[]>();
+  for (const [key, locs] of locations) {
+    const newKey = toKey(key);
+    if (newKey !== undefined)
+      copy.set(
+        newKey,
+        locs.map((loc) => ({ ...loc })),
+      );
+  }
+  return copy;
 }
 
 export function nodeFileTrace(
@@ -425,11 +430,13 @@ export class Job {
 
     const { locations } = analyzeResult;
     if (this.trackLocations && locations) {
-      // the cache may be shared across bases, so asset keys are absolute there
+      // the cache may be shared across jobs with other bases or ignores, so
+      // its asset keys are absolute and may include assets this job ignores
       this.fileLocations.set(relative(this.base, realPath), {
-        assetLocations: copyLocations(locations.assetLocations, (asset) =>
-          relative(this.base, asset),
-        ),
+        assetLocations: copyLocations(locations.assetLocations, (asset) => {
+          const key = relative(this.base, asset);
+          return this.ignoreFn(key) ? undefined : key;
+        }),
         depLocations: copyLocations(locations.depLocations),
         importLocations: copyLocations(locations.importLocations),
       });
