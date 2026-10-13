@@ -337,7 +337,7 @@ export default async function analyze(
   }
 
   // loc is null when the value has no source position of its own
-  // (package.json lookups, statically evaluated requires).
+  // (special cases, package.json lookups, statically evaluated requires).
   function emitDep(value: string, loc: AssetLocation | null) {
     deps.add(value);
     addLocation(depLocations, value, loc);
@@ -360,15 +360,6 @@ export default async function analyze(
       callEnd: call.end,
       type,
     };
-  }
-
-  // Special-case emissions have no asset literal in source; the closest anchor
-  // is the `require()` that loaded the package. Their own type lets consumers
-  // tell them apart from a direct reference.
-  function specialCaseLoc(node?: Node): AssetLocation | null {
-    return node
-      ? { start: node.start, end: node.end, type: 'special-case' }
-      : null;
   }
 
   const dir = path.dirname(id);
@@ -724,10 +715,9 @@ export default async function analyze(
     await handleSpecialCases({
       id,
       ast,
-      emitDependency: (dep, node) => emitDep(dep, specialCaseLoc(node)),
-      emitAsset: (asset, node) => emitAsset(asset, specialCaseLoc(node)),
-      emitAssetDirectory: (dir, node) =>
-        emitAssetDirectory(dir, specialCaseLoc(node)),
+      emitDependency: (dep) => emitDep(dep, null),
+      emitAsset: (asset) => emitAsset(asset, null),
+      emitAssetDirectory,
       job,
     });
   }
