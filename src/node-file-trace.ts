@@ -384,8 +384,7 @@ export class Job {
 
     let analyzeResult: AnalyzeResult;
 
-    // an entry analyzed without trackLocations has no locations and cannot
-    // serve a tracking run
+    // untracked cache entries have no locations to serve a tracking run
     const cachedAnalysis = this.analysisCache.get(realPath);
     if (cachedAnalysis && (cachedAnalysis.locations || !this.trackLocations)) {
       analyzeResult = cachedAnalysis;
@@ -402,9 +401,7 @@ export class Job {
 
     const { locations } = analyzeResult;
     if (this.trackLocations && locations) {
-      // keyed by real path like fileList. Asset keys are absolute in the
-      // analysis cache, which can be shared across jobs with different bases;
-      // report them relative to base too
+      // the cache may be shared across bases, so asset keys are absolute there
       this.fileLocations.set(relative(this.base, realPath), {
         assetLocations: new Map(
           [...locations.assetLocations].map(([asset, locs]) => [

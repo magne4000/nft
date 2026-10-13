@@ -14,14 +14,11 @@ export type LocationType =
   | 'module-register'
   | 'glob'
   | 'nbind'
-  // any other statically evaluated path expression (`__dirname + '/x'`, ...)
   | 'expression';
 
 export interface AssetLocation {
-  // offsets of the path expression; string literals include their quotes
   start: number;
   end: number;
-  // offsets of the enclosing call, `new URL(...)` or import/export declaration
   callStart?: number;
   callEnd?: number;
   type: LocationType;

@@ -266,7 +266,6 @@ export interface AnalyzeResult {
   deps: Set<string>;
   imports: Set<string>;
   isESM: boolean;
-  // only set when analyzed with job.trackLocations; asset keys are absolute
   locations?: FileLocationResult;
 }
 
@@ -316,8 +315,6 @@ export default async function analyze(
   const assets = new Set<string>();
   const deps = new Set<string>();
   const imports = new Set<string>();
-  // only allocated when opted in via trackLocations: every location helper
-  // below is a no-op without it
   const locations: FileLocationResult | undefined = job.trackLocations
     ? {
         assetLocations: new Map(),
@@ -326,8 +323,7 @@ export default async function analyze(
       }
     : undefined;
 
-  // The walker can reach one expression more than once (a path.join call, then
-  // its __dirname leaf), so a range already recorded for `key` is skipped.
+  // the walker can revisit an expression (path.join, then its __dirname leaf)
   function addLocation(
     kind: keyof FileLocationResult,
     key: string,
@@ -341,8 +337,6 @@ export default async function analyze(
       arr.push(loc);
   }
 
-  // loc is null when the value has no source position of its own
-  // (special cases, package.json lookups, statically evaluated requires).
   function emitDep(value: string, loc: AssetLocation | null) {
     deps.add(value);
     addLocation('depLocations', value, loc);
@@ -356,7 +350,6 @@ export default async function analyze(
     addLocation('assetLocations', value, loc);
   }
 
-  // A reference whose path expression (`arg`) sits inside an enclosing call.
   function refLoc(
     arg: Node,
     call: Node,
@@ -409,8 +402,6 @@ export default async function analyze(
         dot: true,
         nodir: true,
       });
-      // every globbed file inherits the location of the expression that
-      // produced the directory
       files
         .filter(
           (name) =>
@@ -895,7 +886,6 @@ export default async function analyze(
           // if it computes, then we start backtracking
           if (staticChildValue && parent) {
             staticChildNode = node;
-            // Determine location type from callee name
             if (node.callee.type === 'MemberExpression') {
               const prop = node.callee.property.name;
               if (prop === 'join') staticLocationType = 'path-join';
@@ -1532,8 +1522,6 @@ export default async function analyze(
         : path.resolve(value);
   }
 
-  // Location of the static child expression being emitted as an asset. For
-  // `new URL(arg, import.meta.url)` the range is `arg`, the relative specifier.
   function staticChildLoc(node: Node): AssetLocation | null {
     if (!locations) return null;
     if (
