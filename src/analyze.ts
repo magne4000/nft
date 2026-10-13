@@ -1092,8 +1092,6 @@ export default async function analyze(
                 // if it computes, then we start backtracking
                 if (staticChildValue) {
                   staticChildNode = node.arguments[0];
-                  staticCallNode = node;
-                  staticLocationType = 'fs';
                   if (
                     calleeValue.value === FS_DIR_FN &&
                     node.arguments[0].type === 'Identifier' &&
@@ -1105,6 +1103,8 @@ export default async function analyze(
                       refLoc(node.arguments[0], node, 'fs'),
                     );
                   } else {
+                    staticCallNode = node;
+                    staticLocationType = 'fs';
                     await backtrack(parent, this);
                   }
                   return this.skip();

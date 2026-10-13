@@ -241,6 +241,18 @@ describe('trackLocations', () => {
     ]);
   });
 
+  it('does not attribute fs.readdirSync(__dirname) to the next expression', async () => {
+    const code = `const path = require('path');\nfoo(require('fs').readdirSync(__dirname), path.join(__dirname, '../a.txt'));`;
+    const { assetLocations } = await trace('lib/index.js', {
+      'lib/index.js': code,
+      'a.txt': '',
+    });
+    const locs = slices(code, assetLocations, 'a.txt');
+    expect(locs).toHaveLength(1);
+    expect(locs[0].arg).toBe(`path.join(__dirname, '../a.txt')`);
+    expect(locs[0].call).toBeUndefined();
+  });
+
   it('records a wildcard require on each matched file', async () => {
     const code = `const lang = process.env.LANG;\nrequire('./locales/' + lang + '.js');`;
     const { depLocations } = await trace('index.js', {
