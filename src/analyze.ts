@@ -27,6 +27,7 @@ import nodeGypBuild from 'node-gyp-build';
 import mapboxPregyp from '@mapbox/node-pre-gyp';
 import { Job } from './node-file-trace';
 import { fileURLToPath, pathToFileURL, URL } from 'url';
+import { FileLocationResult, LocationType, ReferenceLocation } from './types';
 
 // Note: these should be deprecated over time as they ship in Acorn core
 const acorn = Parser.extend(
@@ -265,6 +266,7 @@ export interface AnalyzeResult {
   deps: Set<string>;
   imports: Set<string>;
   isESM: boolean;
+  locations?: FileLocationResult;
 }
 
 // Helper: process pino transport config object
@@ -313,6 +315,62 @@ export default async function analyze(
   const assets = new Set<string>();
   const deps = new Set<string>();
   const imports = new Set<string>();
+  const locations: FileLocationResult | undefined = job.trackLocations
+    ? {
+        assetLocations: new Map(),
+        depLocations: new Map(),
+        importLocations: new Map(),
+      }
+    : undefined;
+
+  // the walker can revisit an expression (path.join, then its __dirname leaf)
+  function addLocation(
+    kind: keyof FileLocationResult,
+    key: string,
+    loc: ReferenceLocation | null,
+  ) {
+    if (!locations || !loc) return;
+    const map = locations[kind];
+    const arr = map.get(key);
+    if (!arr) map.set(key, [loc]);
+    else if (!arr.some((l) => l.start === loc.start && l.end === loc.end))
+      arr.push(loc);
+  }
+
+  // local file paths are keyed like a literal require of them from this module
+  function specifierKey(value: string) {
+    if (!path.isAbsolute(value)) return value;
+    const rel = path.relative(dir, value).replaceAll(path.sep, '/');
+    return rel.startsWith('../') ? rel : './' + rel;
+  }
+  // `file` is the absolute path when `value` is a relative path without './'
+  function emitDep(value: string, loc: ReferenceLocation | null, file = value) {
+    deps.add(value);
+    if (loc) addLocation('depLocations', specifierKey(file), loc);
+  }
+  function emitImport(value: string, loc: ReferenceLocation | null) {
+    imports.add(value);
+    if (loc) addLocation('importLocations', specifierKey(value), loc);
+  }
+  function emitAsset(value: string, loc: ReferenceLocation | null) {
+    assets.add(value);
+    addLocation('assetLocations', value, loc);
+  }
+
+  function refLoc(
+    arg: Node,
+    call: Node,
+    type: LocationType,
+  ): ReferenceLocation | null {
+    if (!locations) return null;
+    return {
+      start: arg.start,
+      end: arg.end,
+      callStart: call.start,
+      callEnd: call.end,
+      type,
+    };
+  }
 
   const dir = path.dirname(id);
   // if (typeof options.production === 'boolean' && staticProcess.env.NODE_ENV === UNKNOWN)
@@ -320,7 +378,10 @@ export default async function analyze(
   cwd = job.cwd;
   const pkgBase = getPackageBase(id);
 
-  const emitAssetDirectory = (wildcardPath: string) => {
+  const emitAssetDirectory = (
+    wildcardPath: string,
+    loc: ReferenceLocation | null = null,
+  ) => {
     if (!job.analysis.emitGlobs) return;
     wildcardPath = wildcardPath.replaceAll(path.sep, path.posix.sep);
     const wildcardIndex = wildcardPath.indexOf(WILDCARD);
@@ -354,14 +415,11 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => assets.add(file));
+        .forEach((file) => emitAsset(file, loc));
     });
   };
 
   let assetEmissionPromises = Promise.resolve();
-
-  // remove shebang
-  code = code.replace(/^#![^\n\r]*[\r\n]/, '');
 
   let ast: Node;
   let isESM = false;
@@ -369,6 +427,7 @@ export default async function analyze(
   try {
     ast = acorn.parse(code, {
       ecmaVersion: 'latest',
+      allowHashBang: true,
       allowReturnOutsideFunction: true,
     });
     isESM = false;
@@ -385,6 +444,7 @@ export default async function analyze(
     try {
       ast = acorn.parse(code, {
         ecmaVersion: 'latest',
+        allowHashBang: true,
         sourceType: 'module',
         allowAwaitOutsideFunction: true,
       });
@@ -394,7 +454,13 @@ export default async function analyze(
         new Error(`Failed to parse ${id} as module:\n${e && e.message}`),
       );
       // Parser errors just skip analysis
-      return { assets, deps, imports, isESM: false };
+      return {
+        assets,
+        deps,
+        imports,
+        isESM: false,
+        locations,
+      };
     }
   }
 
@@ -427,7 +493,7 @@ export default async function analyze(
       value: {
         value: {
           [FUNCTION](specifier: string) {
-            deps.add(specifier);
+            emitDep(specifier, null);
             const m =
               staticModules[
                 specifier.startsWith('node:') ? specifier.slice(5) : specifier
@@ -477,10 +543,10 @@ export default async function analyze(
   }
 
   if ((isESM || job.mixedModules) && isAst(ast)) {
-    for (const decl of ast.body) {
+    for (const decl of ast.body as Node[]) {
       if (decl.type === 'ImportDeclaration') {
         const source = String(decl.source.value);
-        deps.add(source);
+        emitDep(source, refLoc(decl.source, decl, 'import'));
         const staticModule =
           staticModules[source.startsWith('node:') ? source.slice(5) : source];
         if (staticModule) {
@@ -505,7 +571,10 @@ export default async function analyze(
         decl.type === 'ExportNamedDeclaration' ||
         decl.type === 'ExportAllDeclaration'
       ) {
-        if (decl.source) deps.add(String(decl.source.value));
+        if (decl.source) {
+          const source = String(decl.source.value);
+          emitDep(source, refLoc(decl.source, decl, 'import'));
+        }
       }
     }
   }
@@ -528,11 +597,15 @@ export default async function analyze(
   // greatest parent statically known leaf computation corresponds to an asset path
   let staticChildNode: Node | undefined;
   let staticChildValue: EvaluatedValue;
+  let staticCall: { node: Node; type: LocationType } | undefined;
 
   // Express engine opt-out
   let definedExpressEngines = false;
 
-  function emitWildcardRequire(wildcardRequire: string) {
+  function emitWildcardRequire(
+    wildcardRequire: string,
+    loc: ReferenceLocation | null,
+  ) {
     if (
       !job.analysis.emitGlobs ||
       (!wildcardRequire.startsWith('./') && !wildcardRequire.startsWith('../'))
@@ -578,19 +651,44 @@ export default async function analyze(
             !excludeAssetExtensions.has(path.extname(name)) &&
             !excludeAssetFiles.has(path.basename(name)),
         )
-        .forEach((file) => deps.add(file));
+        .forEach((file) => emitDep(file, loc));
     });
   }
 
-  async function processRequireArg(expression: Node, isImport = false) {
+  async function processRequireArg(
+    expression: Node,
+    isImport: boolean,
+    callNode: Node,
+    locationType: LocationType,
+  ) {
     if (expression.type === 'ConditionalExpression') {
-      await processRequireArg(expression.consequent, isImport);
-      await processRequireArg(expression.alternate, isImport);
+      await processRequireArg(
+        expression.consequent,
+        isImport,
+        callNode,
+        locationType,
+      );
+      await processRequireArg(
+        expression.alternate,
+        isImport,
+        callNode,
+        locationType,
+      );
       return;
     }
     if (expression.type === 'LogicalExpression') {
-      await processRequireArg(expression.left, isImport);
-      await processRequireArg(expression.right, isImport);
+      await processRequireArg(
+        expression.left,
+        isImport,
+        callNode,
+        locationType,
+      );
+      await processRequireArg(
+        expression.right,
+        isImport,
+        callNode,
+        locationType,
+      );
       return;
     }
 
@@ -598,13 +696,18 @@ export default async function analyze(
     if (!computed) return;
 
     function add(value: string) {
-      (isImport ? imports : deps).add(value);
+      const loc = refLoc(expression, callNode, locationType);
+      if (isImport) emitImport(value, loc);
+      else emitDep(value, loc);
     }
 
     if ('value' in computed && typeof computed.value === 'string') {
       if (!computed.wildcards) add(computed.value);
       else if (computed.wildcards.length >= 1)
-        emitWildcardRequire(computed.value);
+        emitWildcardRequire(
+          computed.value,
+          refLoc(expression, callNode, 'glob'),
+        );
     } else {
       if ('ifTrue' in computed && typeof computed.ifTrue === 'string')
         add(computed.ifTrue);
@@ -619,8 +722,8 @@ export default async function analyze(
     await handleSpecialCases({
       id,
       ast,
-      emitDependency: (path) => deps.add(path),
-      emitAsset: (path) => assets.add(path),
+      emitDependency: (dep) => emitDep(dep, null),
+      emitAsset: (asset) => emitAsset(asset, null),
       emitAssetDirectory,
       job,
     });
@@ -708,7 +811,7 @@ export default async function analyze(
         staticChildNode = node;
         await backtrack(parent, this);
       } else if (node.type === 'ImportExpression') {
-        await processRequireArg(node.source, true);
+        await processRequireArg(node.source, true, node, 'dynamic-import');
         return;
       }
       // Call expression cases and asset triggers
@@ -728,7 +831,7 @@ export default async function analyze(
             knownBindings.require &&
             knownBindings.require.shadowDepth === 0
           ) {
-            await processRequireArg(node.arguments[0]);
+            await processRequireArg(node.arguments[0], false, node, 'require');
             return;
           }
         } else if (
@@ -742,7 +845,7 @@ export default async function analyze(
           node.callee.property.name === 'require' &&
           node.arguments.length
         ) {
-          await processRequireArg(node.arguments[0]);
+          await processRequireArg(node.arguments[0], false, node, 'require');
           return;
         } else if (
           (!isESM || job.mixedModules) &&
@@ -756,7 +859,12 @@ export default async function analyze(
           node.callee.property.name === 'resolve' &&
           node.arguments.length
         ) {
-          await processRequireArg(node.arguments[0]);
+          await processRequireArg(
+            node.arguments[0],
+            false,
+            node,
+            'require-resolve',
+          );
           return;
         }
 
@@ -795,7 +903,12 @@ export default async function analyze(
                 (!knownBindings.require ||
                   knownBindings.require.shadowDepth === 0)
               ) {
-                await processRequireArg(node.arguments[0]);
+                await processRequireArg(
+                  node.arguments[0],
+                  false,
+                  node,
+                  'require',
+                );
               }
               break;
             // require('bindings')(...)
@@ -820,7 +933,8 @@ export default async function analyze(
                   } catch (e) {}
                   if (resolved) {
                     staticChildValue = { value: resolved };
-                    staticChildNode = node;
+                    staticChildNode = node.arguments[0];
+                    staticCall = { node, type: 'bindings' };
                     await emitStaticChildAsset();
                   }
                 }
@@ -857,7 +971,8 @@ export default async function analyze(
                   }
                   if (resolved) {
                     staticChildValue = { value: resolved };
-                    staticChildNode = node;
+                    staticChildNode = node.arguments[0];
+                    staticCall = { node, type: 'node-gyp-build' };
                     await emitStaticChildAsset();
                   }
                 }
@@ -878,8 +993,10 @@ export default async function analyze(
                 ) {
                   const bindingInfo = nbind(arg.value);
                   if (bindingInfo && bindingInfo.path) {
-                    deps.add(
+                    emitDep(
                       path.relative(dir, bindingInfo.path).replace(/\\/g, '/'),
+                      refLoc(node.arguments[0], node, 'nbind'),
+                      bindingInfo.path,
                     );
                     return this.skip();
                   }
@@ -895,7 +1012,12 @@ export default async function analyze(
                 node.arguments[0].value === 'view engine' &&
                 !definedExpressEngines
               ) {
-                await processRequireArg(node.arguments[1]);
+                await processRequireArg(
+                  node.arguments[1],
+                  false,
+                  node,
+                  'express-view-engine',
+                );
                 return this.skip();
               }
               break;
@@ -911,9 +1033,8 @@ export default async function analyze(
                 node.arguments.length >= 1 &&
                 node.arguments[0].type === 'ObjectExpression'
               ) {
-                await processPinoTransportObject(
-                  node.arguments[0],
-                  processRequireArg,
+                await processPinoTransportObject(node.arguments[0], (arg) =>
+                  processRequireArg(arg, false, node, 'pino-transport'),
                 );
                 return this.skip();
               }
@@ -942,7 +1063,13 @@ export default async function analyze(
                       ) {
                         await processPinoTransportObject(
                           loggerProp.value,
-                          processRequireArg,
+                          (arg) =>
+                            processRequireArg(
+                              arg,
+                              false,
+                              node,
+                              'pino-transport',
+                            ),
                         );
                       }
                     }
@@ -966,8 +1093,12 @@ export default async function analyze(
                     node.arguments[0].name === '__dirname'
                   ) {
                     // Special case `fs.readdirSync(__dirname)` to emit right away
-                    emitAssetDirectory(dir);
+                    emitAssetDirectory(
+                      dir,
+                      refLoc(node.arguments[0], node, 'fs'),
+                    );
                   } else {
+                    staticCall = { node, type: 'fs' };
                     await backtrack(parent, this);
                   }
                   return this.skip();
@@ -995,7 +1126,7 @@ export default async function analyze(
                 (await job.stat(pjsonPath)) === null
               )
                 pjsonPath = path.resolve(pjsonPath, '../../package.json');
-              if (pjsonPath !== rootPjson) assets.add(pjsonPath);
+              if (pjsonPath !== rootPjson) emitAsset(pjsonPath, null);
               break;
             case MODULE_FN:
               if (
@@ -1035,11 +1166,17 @@ export default async function analyze(
                       ? srcPath
                       : './' + srcPath;
 
-                    imports.add(relativeSrcPath);
+                    emitImport(
+                      relativeSrcPath,
+                      refLoc(node.arguments[0], node, 'module-register'),
+                    );
                   }
                 } else {
                   // It's a bare specifier, so just add into the imports
-                  imports.add(pathOrSpecifier);
+                  emitImport(
+                    pathOrSpecifier,
+                    refLoc(node.arguments[0], node, 'module-register'),
+                  );
                 }
               }
               break;
@@ -1066,7 +1203,9 @@ export default async function analyze(
               prop.key.name === 'transport' &&
               prop.value.type === 'ObjectExpression'
             ) {
-              await processPinoTransportObject(prop.value, processRequireArg);
+              await processPinoTransportObject(prop.value, (arg) =>
+                processRequireArg(arg, false, node, 'pino-transport'),
+              );
             }
           }
         }
@@ -1272,9 +1411,18 @@ export default async function analyze(
   });
 
   await assetEmissionPromises;
-  return { assets, deps, imports, isESM };
+  return {
+    assets,
+    deps,
+    imports,
+    isESM,
+    locations,
+  };
 
-  async function emitAssetPath(assetPath: string) {
+  async function emitAssetPath(
+    assetPath: string,
+    loc: ReferenceLocation | null,
+  ) {
     // verify the asset file / directory exists
     const wildcardIndex = assetPath.indexOf(WILDCARD);
     const dirIndex =
@@ -1314,11 +1462,12 @@ export default async function analyze(
     if (stats.isFile()) {
       // do not emit file assets outside job.base
       if (job.ignoreFn(path.relative(job.base, assetPath))) return;
-      assets.add(assetPath);
+      // __filename / import.meta.url point at the module itself, not an asset
+      emitAsset(assetPath, assetPath === id ? null : loc);
     } else if (stats.isDirectory()) {
       // do not emit directory assets outside job.base
       if (job.ignoreFn(path.relative(job.base, assetPath))) return;
-      if (validWildcard(assetPath)) emitAssetDirectory(assetPath);
+      if (validWildcard(assetPath)) emitAssetDirectory(assetPath, loc);
     }
   }
 
@@ -1373,10 +1522,30 @@ export default async function analyze(
         : path.resolve(value);
   }
 
-  async function emitStaticChildAsset() {
-    if (!staticChildValue) {
-      return;
+  async function staticChildLoc(node: Node): Promise<ReferenceLocation | null> {
+    if (!locations) return null;
+    if (
+      node.type === 'NewExpression' &&
+      node.callee.type === 'Identifier' &&
+      node.callee.name === 'URL' &&
+      node.arguments.length >= 1
+    )
+      return refLoc(node.arguments[0], node, 'new-url');
+    if (staticCall) return refLoc(node, staticCall.node, staticCall.type);
+    let type: LocationType = 'expression';
+    if (node.type === 'CallExpression') {
+      const callee = await computePureStaticValue(node.callee, false);
+      if (callee && 'value' in callee) {
+        if (callee.value === staticPath.join) type = 'path-join';
+        else if (callee.value === staticPath.resolve) type = 'path-resolve';
+      }
     }
+    return { start: node.start, end: node.end, type };
+  }
+
+  async function emitStaticChildAsset() {
+    if (!staticChildValue || !staticChildNode) return;
+    const loc = await staticChildLoc(staticChildNode);
 
     if (
       'value' in staticChildValue &&
@@ -1384,7 +1553,7 @@ export default async function analyze(
     ) {
       try {
         const resolved = resolveAbsolutePathOrUrl(staticChildValue.value);
-        await emitAssetPath(resolved);
+        await emitAssetPath(resolved, loc);
       } catch (e) {}
     } else if (
       'ifTrue' in staticChildValue &&
@@ -1400,22 +1569,23 @@ export default async function analyze(
       try {
         resolvedElse = resolveAbsolutePathOrUrl(staticChildValue.else);
       } catch (e) {}
-      if (resolvedThen) await emitAssetPath(resolvedThen);
-      if (resolvedElse) await emitAssetPath(resolvedElse);
+      if (resolvedThen) await emitAssetPath(resolvedThen, loc);
+      if (resolvedElse) await emitAssetPath(resolvedElse, loc);
     } else if (
-      staticChildNode &&
       staticChildNode.type === 'ArrayExpression' &&
       'value' in staticChildValue &&
       staticChildValue.value instanceof Array
     ) {
-      for (const value of staticChildValue.value) {
+      // static eval maps elements[i] to value[i]
+      const { elements } = staticChildNode;
+      for (const [i, value] of staticChildValue.value.entries()) {
         try {
           const resolved = resolveAbsolutePathOrUrl(value);
-          await emitAssetPath(resolved);
+          await emitAssetPath(resolved, await staticChildLoc(elements[i]));
         } catch (e) {}
       }
     }
-    staticChildNode = staticChildValue = undefined;
+    staticChildNode = staticChildValue = staticCall = undefined;
   }
 }
 

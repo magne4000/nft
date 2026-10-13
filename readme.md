@@ -225,6 +225,53 @@ With `depth: 0`, only the entry point files themselves are included in the trace
 
 Note that the `depth` option cannot be less than 0. Setting a negative value will result in an error.
 
+#### Location Tracking
+
+> Status: Experimental. May change at any time.
+
+Set `trackLocations` to also get where each dependency and asset is referenced in the source, e.g. for tools that rewrite those references:
+
+```js
+const { fileLocations } = await nodeFileTrace(files, {
+  trackLocations: true,
+});
+```
+
+`fileLocations` maps each analyzed file, relative to `base` like `fileList`, to:
+
+```js
+{
+  // specifier of a require / import / re-export, express view engine, pino
+  // transport target or nbind binding, evaluated when computed; local file
+  // paths (computed, or matched by a wildcard require or import()) are keyed
+  // as relative specifiers, e.g. './locales/en.js'
+  depLocations: Map<string, ReferenceLocation[]>,
+  // dynamic import() / module.register() specifier, keyed the same way
+  importLocations: Map<string, ReferenceLocation[]>,
+  // asset path relative to `base`, as in `fileList`
+  assetLocations: Map<string, ReferenceLocation[]>,
+}
+```
+
+where each `ReferenceLocation` is:
+
+```js
+{
+  start: number, // offsets of the path expression in the file source;
+  end: number, // string literals include their quotes
+  callStart?: number, // offsets of the enclosing call, `new URL(...)`
+  callEnd?: number, // or import / export declaration
+  // what made the reference, e.g. 'require', 'import', 'fs', 'path-join',
+  // 'new-url', or 'expression' for any other static path expression; the
+  // exported `LocationType` lists them all
+  type: LocationType,
+}
+```
+
+Assets only get a location once emitted, while dependencies and imports get one even when they cannot be resolved. Assets emitted by package-specific special cases have no source reference and therefore no location, and neither do references of a module to itself (`__filename`, `import.meta.url`).
+
+A location can be shared by several entries: files found through a directory, wildcard or conditional reference all share the location of that expression, and a range can be recorded both as a dependency and as an asset, e.g. `require(path.join(__dirname, 'x.js'))`. When rewriting sources, dedupe locations by `start` / `end` first.
+
 #### Reasons
 
 To get the underlying reasons for individual files being included, a `reasons` object is also provided by the output:

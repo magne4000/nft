@@ -1,5 +1,37 @@
 import { Job } from './node-file-trace';
 
+export type LocationType =
+  | 'require'
+  | 'import'
+  | 'dynamic-import'
+  | 'require-resolve'
+  | 'fs'
+  | 'path-join'
+  | 'path-resolve'
+  | 'new-url'
+  | 'bindings'
+  | 'node-gyp-build'
+  | 'module-register'
+  | 'express-view-engine'
+  | 'pino-transport'
+  | 'glob'
+  | 'nbind'
+  | 'expression';
+
+export interface ReferenceLocation {
+  start: number;
+  end: number;
+  callStart?: number;
+  callEnd?: number;
+  type: LocationType;
+}
+
+export interface FileLocationResult {
+  assetLocations: Map<string, ReferenceLocation[]>;
+  depLocations: Map<string, ReferenceLocation[]>;
+  importLocations: Map<string, ReferenceLocation[]>;
+}
+
 export interface Stats {
   isFile(): boolean;
   isDirectory(): boolean;
@@ -59,6 +91,7 @@ export interface NodeFileTraceOptions {
   ) => Promise<string | string[]>;
   fileIOConcurrency?: number;
   depth?: number;
+  trackLocations?: boolean;
 }
 
 export type NodeFileTraceReasonType =
@@ -83,4 +116,5 @@ export interface NodeFileTraceResult {
   esmFileList: Set<string>;
   reasons: NodeFileTraceReasons;
   warnings: Set<Error>;
+  fileLocations?: Map<string, FileLocationResult>;
 }

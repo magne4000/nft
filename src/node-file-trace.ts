@@ -3,6 +3,8 @@ import {
   NodeFileTraceResult,
   NodeFileTraceReasons,
   NodeFileTraceReasonType,
+  FileLocationResult,
+  ReferenceLocation,
 } from './types';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'path';
 import analyze, { AnalyzeResult } from './analyze';
@@ -16,6 +18,34 @@ function inPath(path: string, parent: string) {
   return path.startsWith(pathWithSep) && path !== pathWithSep;
 }
 
+// fresh copies keep consumer edits out of the shared analysis cache;
+// entries whose toKey returns undefined are left out
+function copyLocations(
+  locations: Map<string, ReferenceLocation[]>,
+  toKey: (key: string) => string | undefined = (key) => key,
+) {
+  const copy = new Map<string, ReferenceLocation[]>();
+  for (const [key, locs] of locations) {
+    const newKey = toKey(key);
+    if (newKey !== undefined)
+      copy.set(
+        newKey,
+        locs.map((loc) => ({ ...loc })),
+      );
+  }
+  return copy;
+}
+
+export function nodeFileTrace(
+  files: string[],
+  opts: NodeFileTraceOptions & { trackLocations: true },
+): Promise<
+  NodeFileTraceResult & { fileLocations: Map<string, FileLocationResult> }
+>;
+export function nodeFileTrace(
+  files: string[],
+  opts?: NodeFileTraceOptions,
+): Promise<NodeFileTraceResult>;
 export async function nodeFileTrace(
   files: string[],
   opts: NodeFileTraceOptions = {},
@@ -43,6 +73,7 @@ export async function nodeFileTrace(
     reasons: job.reasons,
     warnings: job.warnings,
   };
+  if (job.trackLocations) result.fileLocations = job.fileLocations;
   return result;
 }
 
@@ -58,6 +89,8 @@ export class Job {
   public log: boolean;
   public depth: number;
   public mixedModules: boolean;
+  public trackLocations: boolean;
+  public fileLocations: Map<string, FileLocationResult>;
   public analysis: {
     emitGlobs?: boolean;
     computeFileReferences?: boolean;
@@ -90,6 +123,7 @@ export class Job {
     // performance and memory usage for fs operations
     fileIOConcurrency = 1024,
     depth = Infinity,
+    trackLocations = false,
   }: NodeFileTraceOptions) {
     this.ts = ts;
     base = resolve(base);
@@ -130,6 +164,8 @@ export class Job {
     this.log = log;
     this.depth = depth;
     this.mixedModules = mixedModules;
+    this.trackLocations = trackLocations;
+    this.fileLocations = new Map();
     this.cachedFileSystem = new CachedFileSystem({ cache, fileIOConcurrency });
     this.analysis = {};
     if (analysis !== false) {
@@ -377,8 +413,9 @@ export class Job {
 
     let analyzeResult: AnalyzeResult;
 
+    // untracked cache entries have no locations to serve a tracking run
     const cachedAnalysis = this.analysisCache.get(realPath);
-    if (cachedAnalysis) {
+    if (cachedAnalysis && (cachedAnalysis.locations || !this.trackLocations)) {
       analyzeResult = cachedAnalysis;
     } else {
       const source = await this.readFile(realPath);
@@ -389,6 +426,20 @@ export class Job {
       // be emit for successive runs that leverage the cache
       analyzeResult = await analyze(realPath, source.toString(), this);
       this.analysisCache.set(realPath, analyzeResult);
+    }
+
+    const { locations } = analyzeResult;
+    if (this.trackLocations && locations) {
+      // the cache may be shared across jobs with other bases or ignores, so
+      // its asset keys are absolute and may include assets this job ignores
+      this.fileLocations.set(relative(this.base, realPath), {
+        assetLocations: copyLocations(locations.assetLocations, (asset) => {
+          const key = relative(this.base, asset);
+          return this.ignoreFn(key) ? undefined : key;
+        }),
+        depLocations: copyLocations(locations.depLocations),
+        importLocations: copyLocations(locations.importLocations),
+      });
     }
 
     const { deps, imports, assets, isESM } = analyzeResult;
