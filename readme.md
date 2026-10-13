@@ -245,15 +245,15 @@ const { fileLocations } = await nodeFileTrace(files, {
   // transport target or nbind binding, evaluated when computed; local file
   // paths (computed, or matched by a wildcard require or import()) are keyed
   // as relative specifiers, e.g. './locales/en.js'
-  depLocations: Map<string, AssetLocation[]>,
+  depLocations: Map<string, ReferenceLocation[]>,
   // dynamic import() / module.register() specifier, keyed the same way
-  importLocations: Map<string, AssetLocation[]>,
+  importLocations: Map<string, ReferenceLocation[]>,
   // asset path relative to `base`, as in `fileList`
-  assetLocations: Map<string, AssetLocation[]>,
+  assetLocations: Map<string, ReferenceLocation[]>,
 }
 ```
 
-where each `AssetLocation` is:
+where each `ReferenceLocation` is:
 
 ```js
 {

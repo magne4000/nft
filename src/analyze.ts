@@ -27,7 +27,7 @@ import nodeGypBuild from 'node-gyp-build';
 import mapboxPregyp from '@mapbox/node-pre-gyp';
 import { Job } from './node-file-trace';
 import { fileURLToPath, pathToFileURL, URL } from 'url';
-import { AssetLocation, FileLocationResult, LocationType } from './types';
+import { FileLocationResult, LocationType, ReferenceLocation } from './types';
 
 // Note: these should be deprecated over time as they ship in Acorn core
 const acorn = Parser.extend(
@@ -327,7 +327,7 @@ export default async function analyze(
   function addLocation(
     kind: keyof FileLocationResult,
     key: string,
-    loc: AssetLocation | null,
+    loc: ReferenceLocation | null,
   ) {
     if (!locations || !loc) return;
     const map = locations[kind];
@@ -343,15 +343,15 @@ export default async function analyze(
     const rel = path.relative(dir, value).replaceAll(path.sep, '/');
     return rel.startsWith('../') ? rel : './' + rel;
   }
-  function emitDep(value: string, loc: AssetLocation | null) {
+  function emitDep(value: string, loc: ReferenceLocation | null) {
     deps.add(value);
     if (loc) addLocation('depLocations', specifierKey(value), loc);
   }
-  function emitImport(value: string, loc: AssetLocation | null) {
+  function emitImport(value: string, loc: ReferenceLocation | null) {
     imports.add(value);
     if (loc) addLocation('importLocations', specifierKey(value), loc);
   }
-  function emitAsset(value: string, loc: AssetLocation | null) {
+  function emitAsset(value: string, loc: ReferenceLocation | null) {
     assets.add(value);
     // __filename / import.meta.url point at the module itself, not an asset
     if (value !== id) addLocation('assetLocations', value, loc);
@@ -361,7 +361,7 @@ export default async function analyze(
     arg: Node,
     call: Node,
     type: LocationType,
-  ): AssetLocation | null {
+  ): ReferenceLocation | null {
     if (!locations) return null;
     return {
       start: arg.start,
@@ -380,7 +380,7 @@ export default async function analyze(
 
   const emitAssetDirectory = (
     wildcardPath: string,
-    loc: AssetLocation | null = null,
+    loc: ReferenceLocation | null = null,
   ) => {
     if (!job.analysis.emitGlobs) return;
     wildcardPath = wildcardPath.replaceAll(path.sep, path.posix.sep);
@@ -604,7 +604,7 @@ export default async function analyze(
 
   function emitWildcardRequire(
     wildcardRequire: string,
-    loc: AssetLocation | null,
+    loc: ReferenceLocation | null,
   ) {
     if (
       !job.analysis.emitGlobs ||
@@ -1418,7 +1418,10 @@ export default async function analyze(
     locations,
   };
 
-  async function emitAssetPath(assetPath: string, loc: AssetLocation | null) {
+  async function emitAssetPath(
+    assetPath: string,
+    loc: ReferenceLocation | null,
+  ) {
     // verify the asset file / directory exists
     const wildcardIndex = assetPath.indexOf(WILDCARD);
     const dirIndex =
@@ -1517,7 +1520,7 @@ export default async function analyze(
         : path.resolve(value);
   }
 
-  async function staticChildLoc(node: Node): Promise<AssetLocation | null> {
+  async function staticChildLoc(node: Node): Promise<ReferenceLocation | null> {
     if (!locations) return null;
     if (
       node.type === 'NewExpression' &&

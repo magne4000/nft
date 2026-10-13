@@ -4,7 +4,7 @@ import {
   NodeFileTraceReasons,
   NodeFileTraceReasonType,
   FileLocationResult,
-  AssetLocation,
+  ReferenceLocation,
 } from './types';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'path';
 import analyze, { AnalyzeResult } from './analyze';
@@ -20,7 +20,7 @@ function inPath(path: string, parent: string) {
 
 // fresh copies keep consumer edits out of the shared analysis cache
 function copyLocations(
-  locations: Map<string, AssetLocation[]>,
+  locations: Map<string, ReferenceLocation[]>,
   toKey: (key: string) => string = (key) => key,
 ) {
   return new Map(

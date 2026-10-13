@@ -18,7 +18,7 @@ export type LocationType =
   | 'nbind'
   | 'expression';
 
-export interface AssetLocation {
+export interface ReferenceLocation {
   start: number;
   end: number;
   callStart?: number;
@@ -27,9 +27,9 @@ export interface AssetLocation {
 }
 
 export interface FileLocationResult {
-  assetLocations: Map<string, AssetLocation[]>;
-  depLocations: Map<string, AssetLocation[]>;
-  importLocations: Map<string, AssetLocation[]>;
+  assetLocations: Map<string, ReferenceLocation[]>;
+  depLocations: Map<string, ReferenceLocation[]>;
+  importLocations: Map<string, ReferenceLocation[]>;
 }
 
 export interface Stats {
