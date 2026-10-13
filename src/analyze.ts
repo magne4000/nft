@@ -597,8 +597,7 @@ export default async function analyze(
   // greatest parent statically known leaf computation corresponds to an asset path
   let staticChildNode: Node | undefined;
   let staticChildValue: EvaluatedValue;
-  let staticCallNode: Node | undefined;
-  let staticLocationType: LocationType | undefined;
+  let staticCall: { node: Node; type: LocationType } | undefined;
 
   // Express engine opt-out
   let definedExpressEngines = false;
@@ -885,11 +884,6 @@ export default async function analyze(
           // if it computes, then we start backtracking
           if (staticChildValue && parent) {
             staticChildNode = node;
-            if (node.callee.type === 'MemberExpression') {
-              const prop = node.callee.property.name;
-              if (prop === 'join') staticLocationType = 'path-join';
-              else if (prop === 'resolve') staticLocationType = 'path-resolve';
-            }
             await backtrack(parent, this);
           }
         }
@@ -940,8 +934,7 @@ export default async function analyze(
                   if (resolved) {
                     staticChildValue = { value: resolved };
                     staticChildNode = node.arguments[0];
-                    staticCallNode = node;
-                    staticLocationType = 'bindings';
+                    staticCall = { node, type: 'bindings' };
                     await emitStaticChildAsset();
                   }
                 }
@@ -979,8 +972,7 @@ export default async function analyze(
                   if (resolved) {
                     staticChildValue = { value: resolved };
                     staticChildNode = node.arguments[0];
-                    staticCallNode = node;
-                    staticLocationType = 'node-gyp-build';
+                    staticCall = { node, type: 'node-gyp-build' };
                     await emitStaticChildAsset();
                   }
                 }
@@ -1105,8 +1097,7 @@ export default async function analyze(
                       refLoc(node.arguments[0], node, 'fs'),
                     );
                   } else {
-                    staticCallNode = node;
-                    staticLocationType = 'fs';
+                    staticCall = { node, type: 'fs' };
                     await backtrack(parent, this);
                   }
                   return this.skip();
@@ -1526,7 +1517,7 @@ export default async function analyze(
         : path.resolve(value);
   }
 
-  function staticChildLoc(node: Node): AssetLocation | null {
+  async function staticChildLoc(node: Node): Promise<AssetLocation | null> {
     if (!locations) return null;
     if (
       node.type === 'NewExpression' &&
@@ -1535,15 +1526,21 @@ export default async function analyze(
       node.arguments.length >= 1
     )
       return refLoc(node.arguments[0], node, 'new-url');
-    const type = staticLocationType ?? 'expression';
-    return staticCallNode
-      ? refLoc(node, staticCallNode, type)
-      : { start: node.start, end: node.end, type };
+    if (staticCall) return refLoc(node, staticCall.node, staticCall.type);
+    let type: LocationType = 'expression';
+    if (node.type === 'CallExpression') {
+      const callee = await computePureStaticValue(node.callee, false);
+      if (callee && 'value' in callee) {
+        if (callee.value === staticPath.join) type = 'path-join';
+        else if (callee.value === staticPath.resolve) type = 'path-resolve';
+      }
+    }
+    return { start: node.start, end: node.end, type };
   }
 
   async function emitStaticChildAsset() {
     if (!staticChildValue || !staticChildNode) return;
-    const loc = staticChildLoc(staticChildNode);
+    const loc = await staticChildLoc(staticChildNode);
 
     if (
       'value' in staticChildValue &&
@@ -1579,15 +1576,11 @@ export default async function analyze(
       for (const [i, value] of staticChildValue.value.entries()) {
         try {
           const resolved = resolveAbsolutePathOrUrl(value);
-          await emitAssetPath(resolved, staticChildLoc(elements[i]));
+          await emitAssetPath(resolved, await staticChildLoc(elements[i]));
         } catch (e) {}
       }
     }
-    staticChildNode =
-      staticChildValue =
-      staticCallNode =
-      staticLocationType =
-        undefined;
+    staticChildNode = staticChildValue = staticCall = undefined;
   }
 }
 

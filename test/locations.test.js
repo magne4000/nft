@@ -196,14 +196,42 @@ describe('trackLocations', () => {
   });
 
   it('labels other static path expressions as expression', async () => {
-    const code = `const p = __dirname + '/a.txt';`;
+    const code = `const path = require('path');\nconst a = __dirname + '/a.txt';\nconst files = [path.join(__dirname, 'b.txt'), __dirname + '/c.txt'];\nconst d = path.join(__dirname, 'd') + '.txt';`;
     const { assetLocations } = await trace('index.js', {
       'index.js': code,
       'a.txt': '',
+      'b.txt': '',
+      'c.txt': '',
+      'd.txt': '',
     });
-    expect(slices(code, assetLocations, 'a.txt')).toEqual([
-      { type: 'expression', arg: `__dirname + '/a.txt'`, call: undefined },
-    ]);
+    const labels = Object.fromEntries(
+      ['a.txt', 'b.txt', 'c.txt', 'd.txt'].map((file) => [
+        file,
+        slices(code, assetLocations, file),
+      ]),
+    );
+    expect(labels).toEqual({
+      'a.txt': [
+        { type: 'expression', arg: `__dirname + '/a.txt'`, call: undefined },
+      ],
+      'b.txt': [
+        {
+          type: 'path-join',
+          arg: `path.join(__dirname, 'b.txt')`,
+          call: undefined,
+        },
+      ],
+      'c.txt': [
+        { type: 'expression', arg: `__dirname + '/c.txt'`, call: undefined },
+      ],
+      'd.txt': [
+        {
+          type: 'expression',
+          arg: `path.join(__dirname, 'd') + '.txt'`,
+          call: undefined,
+        },
+      ],
+    });
   });
 
   it('records the specifier of new URL(..., import.meta.url)', async () => {
