@@ -261,10 +261,10 @@ where each `ReferenceLocation` is:
   end: number, // string literals include their quotes
   callStart?: number, // offsets of the enclosing call, `new URL(...)`
   callEnd?: number, // or import / export declaration
-  type: 'require' | 'import' | 'dynamic-import' | 'require-resolve' | 'fs' |
-    'path-join' | 'path-resolve' | 'new-url' | 'bindings' | 'node-gyp-build' |
-    'module-register' | 'express-view-engine' | 'pino-transport' | 'glob' |
-    'nbind' | 'expression',
+  // what made the reference, e.g. 'require', 'import', 'fs', 'path-join',
+  // 'new-url', or 'expression' for any other static path expression; the
+  // exported `LocationType` lists them all
+  type: LocationType,
 }
 ```
 
