@@ -31,6 +31,16 @@ function copyLocations(
   );
 }
 
+export function nodeFileTrace(
+  files: string[],
+  opts: NodeFileTraceOptions & { trackLocations: true },
+): Promise<
+  NodeFileTraceResult & { fileLocations: Map<string, FileLocationResult> }
+>;
+export function nodeFileTrace(
+  files: string[],
+  opts?: NodeFileTraceOptions,
+): Promise<NodeFileTraceResult>;
 export async function nodeFileTrace(
   files: string[],
   opts: NodeFileTraceOptions = {},
