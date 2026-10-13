@@ -420,6 +420,7 @@ export default async function analyze(
   try {
     ast = acorn.parse(code, {
       ecmaVersion: 'latest',
+      allowHashBang: true,
       allowReturnOutsideFunction: true,
     });
     isESM = false;
@@ -436,6 +437,7 @@ export default async function analyze(
     try {
       ast = acorn.parse(code, {
         ecmaVersion: 'latest',
+        allowHashBang: true,
         sourceType: 'module',
         allowAwaitOutsideFunction: true,
       });
