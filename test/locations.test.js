@@ -359,6 +359,17 @@ describe('trackLocations', () => {
     ]);
   });
 
+  it('keys an nbind binding as a relative specifier', async () => {
+    const code = `require('nbind').init(__dirname);`;
+    const { depLocations } = await trace('index.js', {
+      'index.js': code,
+      'build/Release/nbind.node': '',
+    });
+    expect(slices(code, depLocations, './build/Release/nbind.node')).toEqual([
+      { type: 'nbind', arg: '__dirname', call: code.slice(0, -1) },
+    ]);
+  });
+
   it('records bindings() and node-gyp-build() arguments', async () => {
     const bindingsCode = `require('bindings')('addon');`;
     const gypCode = `require('node-gyp-build')(__dirname);`;

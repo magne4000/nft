@@ -343,9 +343,10 @@ export default async function analyze(
     const rel = path.relative(dir, value).replaceAll(path.sep, '/');
     return rel.startsWith('../') ? rel : './' + rel;
   }
-  function emitDep(value: string, loc: ReferenceLocation | null) {
+  // `file` is the absolute path when `value` is a relative path without './'
+  function emitDep(value: string, loc: ReferenceLocation | null, file = value) {
     deps.add(value);
-    if (loc) addLocation('depLocations', specifierKey(value), loc);
+    if (loc) addLocation('depLocations', specifierKey(file), loc);
   }
   function emitImport(value: string, loc: ReferenceLocation | null) {
     imports.add(value);
@@ -996,6 +997,7 @@ export default async function analyze(
                     emitDep(
                       path.relative(dir, bindingInfo.path).replace(/\\/g, '/'),
                       refLoc(node.arguments[0], node, 'nbind'),
+                      bindingInfo.path,
                     );
                     return this.skip();
                   }
