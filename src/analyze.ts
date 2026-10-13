@@ -415,9 +415,6 @@ export default async function analyze(
 
   let assetEmissionPromises = Promise.resolve();
 
-  // remove shebang
-  code = code.replace(/^#![^\n\r]*[\r\n]/, '');
-
   let ast: Node;
   let isESM = false;
 
