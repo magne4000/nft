@@ -307,13 +307,18 @@ describe('trackLocations', () => {
       'lib/index.js': code,
       'lib/a.txt': '',
     });
-    expect(slices(code, assetLocations, path.join('lib', 'a.txt'))).toEqual([
+    const expected = [
       {
         type: 'fs',
         arg: '__dirname',
         call: `require('fs').readdirSync(__dirname)`,
       },
-    ]);
+    ];
+    // the module's own file is part of the listing too
+    for (const file of ['a.txt', 'index.js'])
+      expect(slices(code, assetLocations, path.join('lib', file))).toEqual(
+        expected,
+      );
   });
 
   it('does not attribute fs.readdirSync(__dirname) to the next expression', async () => {

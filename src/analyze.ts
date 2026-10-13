@@ -354,8 +354,7 @@ export default async function analyze(
   }
   function emitAsset(value: string, loc: ReferenceLocation | null) {
     assets.add(value);
-    // __filename / import.meta.url point at the module itself, not an asset
-    if (value !== id) addLocation('assetLocations', value, loc);
+    addLocation('assetLocations', value, loc);
   }
 
   function refLoc(
@@ -1463,7 +1462,8 @@ export default async function analyze(
     if (stats.isFile()) {
       // do not emit file assets outside job.base
       if (job.ignoreFn(path.relative(job.base, assetPath))) return;
-      emitAsset(assetPath, loc);
+      // __filename / import.meta.url point at the module itself, not an asset
+      emitAsset(assetPath, assetPath === id ? null : loc);
     } else if (stats.isDirectory()) {
       // do not emit directory assets outside job.base
       if (job.ignoreFn(path.relative(job.base, assetPath))) return;
