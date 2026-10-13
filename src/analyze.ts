@@ -266,6 +266,8 @@ export interface AnalyzeResult {
   deps: Set<string>;
   imports: Set<string>;
   isESM: boolean;
+  // whether the location maps were populated (job.trackLocations at analysis)
+  locationsTracked: boolean;
   assetLocations: Map<string, AssetLocation[]>;
   depLocations: Map<string, AssetLocation[]>;
   importLocations: Map<string, AssetLocation[]>;
@@ -449,6 +451,7 @@ export default async function analyze(
         deps,
         imports,
         isESM: false,
+        locationsTracked: job.trackLocations,
         assetLocations,
         depLocations,
         importLocations,
@@ -1412,6 +1415,7 @@ export default async function analyze(
     deps,
     imports,
     isESM,
+    locationsTracked: job.trackLocations,
     assetLocations,
     depLocations,
     importLocations,

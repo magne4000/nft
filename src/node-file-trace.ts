@@ -384,11 +384,13 @@ export class Job {
 
     let analyzeResult: AnalyzeResult;
 
-    // skip cache when tracking locations: a cache entry built without location
-    // tracking has empty maps and cannot serve a tracking run
-    const cachedAnalysis =
-      !this.trackLocations && this.analysisCache.get(realPath);
-    if (cachedAnalysis) {
+    // an entry analyzed without location tracking has empty location maps and
+    // cannot serve a tracking run
+    const cachedAnalysis = this.analysisCache.get(realPath);
+    if (
+      cachedAnalysis &&
+      (cachedAnalysis.locationsTracked || !this.trackLocations)
+    ) {
       analyzeResult = cachedAnalysis;
     } else {
       const source = await this.readFile(realPath);
@@ -402,7 +404,12 @@ export class Job {
     }
 
     if (this.trackLocations) {
-      this.fileLocations.set(relative(this.base, path), analyzeResult);
+      const { assetLocations, depLocations, importLocations } = analyzeResult;
+      this.fileLocations.set(relative(this.base, path), {
+        assetLocations,
+        depLocations,
+        importLocations,
+      });
     }
 
     const { deps, imports, assets, isESM } = analyzeResult;
