@@ -358,6 +358,18 @@ describe('trackLocations', () => {
     for (const file of languages) expect(assetLocations.has(file)).toBe(false);
   });
 
+  it('keeps changes to returned locations out of a shared cache', async () => {
+    const code = `require('a');`;
+    const cache = {};
+    const first = await trace('index.js', { 'index.js': code }, { cache });
+    first.depLocations.get('a')[0].start = 0;
+    first.depLocations.get('a').push({ start: 0, end: 1, type: 'require' });
+    const second = await trace('index.js', {}, { cache });
+    expect(slices(code, second.depLocations, 'a')).toEqual([
+      { type: 'require', arg: `'a'`, call: `require('a')` },
+    ]);
+  });
+
   it('re-analyzes files cached by a run without trackLocations', async () => {
     const code = `require('a');`;
     fs.writeFileSync(abs('index.js'), code);

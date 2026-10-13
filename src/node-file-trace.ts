@@ -4,6 +4,7 @@ import {
   NodeFileTraceReasons,
   NodeFileTraceReasonType,
   FileLocationResult,
+  AssetLocation,
 } from './types';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'path';
 import analyze, { AnalyzeResult } from './analyze';
@@ -15,6 +16,19 @@ import { CachedFileSystem } from './fs';
 function inPath(path: string, parent: string) {
   const pathWithSep = join(parent, sep);
   return path.startsWith(pathWithSep) && path !== pathWithSep;
+}
+
+// fresh copies keep consumer edits out of the shared analysis cache
+function copyLocations(
+  locations: Map<string, AssetLocation[]>,
+  toKey: (key: string) => string = (key) => key,
+) {
+  return new Map(
+    [...locations].map(([key, locs]) => [
+      toKey(key),
+      locs.map((loc) => ({ ...loc })),
+    ]),
+  );
 }
 
 export async function nodeFileTrace(
@@ -403,14 +417,11 @@ export class Job {
     if (this.trackLocations && locations) {
       // the cache may be shared across bases, so asset keys are absolute there
       this.fileLocations.set(relative(this.base, realPath), {
-        assetLocations: new Map(
-          [...locations.assetLocations].map(([asset, locs]) => [
-            relative(this.base, asset),
-            locs,
-          ]),
+        assetLocations: copyLocations(locations.assetLocations, (asset) =>
+          relative(this.base, asset),
         ),
-        depLocations: locations.depLocations,
-        importLocations: locations.importLocations,
+        depLocations: copyLocations(locations.depLocations),
+        importLocations: copyLocations(locations.importLocations),
       });
     }
 
